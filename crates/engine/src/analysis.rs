@@ -5,6 +5,7 @@ use crate::pairs::pair_plan;
 use crate::policy::{LayStyle, OpenStyle, Policy};
 use crate::rng::Rng;
 use crate::rules::Rules;
+use crate::stakes::Stakes;
 use crate::table::{Table, TableMeld};
 use crate::tile::*;
 use serde::{Deserialize, Serialize};
@@ -53,6 +54,9 @@ pub struct View {
     pub deck_count: u8,
     pub phase: Phase,
     pub taken: Option<Tile>,
+    /// The match situation, when the player has entered it.
+    #[serde(default)]
+    pub stakes: Option<Stakes>,
 }
 
 impl View {
@@ -185,6 +189,7 @@ impl View {
             seen,
             log: None,
             policy: [Policy::default(); 4],
+            stakes: self.stakes,
         }
     }
 }
@@ -217,6 +222,10 @@ pub struct CandReport {
     pub p_deckout: f64,
     /// How often the next player takes the tile this move discards.
     pub p_next_takes: f64,
+    /// Chance of winning the match, when the match situation is known. `mean` is then the chance
+    /// of losing it, per mille, instead of a score gap.
+    #[serde(default)]
+    pub p_win: Option<f64>,
     pub alive: bool,
     /// The explicit steps, for the leading candidates of an exhaustive search.
     #[serde(default)]
@@ -242,6 +251,9 @@ struct Cand {
     decision: Decision,
     mv: Option<Move>,
     scores: Vec<i32>,
+    /// Summed score gap, used only to order candidates whose `scores` are level.
+    tie: i64,
+    win: f64,
     own: i64,
     finish: u32,
     open: u32,
@@ -285,6 +297,8 @@ fn blank(decision: Decision, mv: Option<Move>) -> Cand {
         decision,
         mv,
         scores: vec![],
+        tie: 0,
+        win: 0.0,
         own: 0,
         finish: 0,
         open: 0,
@@ -449,8 +463,24 @@ impl Analyzer {
             truncated: false,
             depth: 0,
         };
-        if opts.exhaustive && me.view.phase == Phase::AfterDraw {
+        // Playing for the match, what decides is finish-or-wait and which tile to give up, including
+        // tiles that cost a penalty; a winning line may come up on one deal in fifty, so the field has to
+        // stay small enough to replay every candidate on every deal. Plans with every discard do that.
+        let plans = Options {
+            max_discards: NIDS,
+            ..opts
+        };
+        if me.view.stakes.is_some() && me.view.phase == Phase::AfterDraw {
+            me.cands = candidates(&me.view, &mut sv, &plans).into_iter().map(|d| blank(d, None)).collect();
+        } else if opts.exhaustive && me.view.phase == Phase::AfterDraw {
             me.enumerate(&mut sv);
+            // A hand with more arrangements than the generator's cap cannot be screened in any useful time.
+            if me.truncated {
+                me.positions.clear();
+                me.discards.clear();
+                me.screening = false;
+                me.cands = candidates(&me.view, &mut sv, &opts).into_iter().map(|d| blank(d, None)).collect();
+            }
         } else {
             me.cands = candidates(&me.view, &mut sv, &opts).into_iter().map(|d| blank(d, None)).collect();
         }
@@ -527,6 +557,8 @@ impl Analyzer {
                 None => play_decision_on(&self.view, deal.clone(), &mut self.sv, c.decision, self.depth),
             };
             c.scores.push(r.gap);
+            c.tie += r.tie as i64;
+            c.win += r.win as f64;
             c.own += r.own as i64;
             c.finish += r.finish as u32;
             c.open += r.opened as u32;
@@ -552,7 +584,9 @@ impl Analyzer {
     /// Switch the survivors to look-ahead simulations and start their statistics afresh,
     /// since scores from the two kinds of simulation are not comparable.
     fn deepen(&mut self) {
-        if !self.opts.lookahead || self.depth > 0 {
+        // Near the end of a match the bot's habit of taking any finish is exactly what must be questioned.
+        let decisive = self.view.stakes.is_some_and(|s| s.hands_left <= 1);
+        if !(self.opts.lookahead || decisive) || self.depth > 0 {
             return;
         }
         let alive = self.cands.iter().filter(|c| c.alive).count();
@@ -579,7 +613,7 @@ impl Analyzer {
         self.next_cut *= 2;
         let field = self.cands.len();
         let keep = (if field > 500 { field / 3 } else { field / 2 }).max(SCREEN_KEEP);
-        self.cands.sort_by(|a, b| mean(&a.scores).total_cmp(&mean(&b.scores)));
+        self.cands.sort_by(merit);
         self.cands.truncate(keep);
         if keep <= SCREEN_KEEP {
             let survivors: Vec<usize> = self
@@ -597,7 +631,7 @@ impl Analyzer {
     fn best_alive(&self) -> Option<usize> {
         (0..self.cands.len())
             .filter(|&i| self.cands[i].alive)
-            .min_by(|&a, &b| mean(&self.cands[a].scores).total_cmp(&mean(&self.cands[b].scores)))
+            .min_by(|&a, &b| merit(&self.cands[a], &self.cands[b]))
     }
 
     fn prune(&mut self) {
@@ -627,7 +661,7 @@ impl Analyzer {
         let mut order: Vec<usize> = (0..self.cands.len()).collect();
         order.sort_by(|&a, &b| {
             let (x, y) = (&self.cands[a], &self.cands[b]);
-            y.alive.cmp(&x.alive).then(mean(&x.scores).total_cmp(&mean(&y.scores)))
+            y.alive.cmp(&x.alive).then(merit(x, y))
         });
         let cands = order
             .into_iter()
@@ -651,6 +685,7 @@ impl Analyzer {
                     p_opp_finish: c.opp_finish as f64 / n,
                     p_deckout: c.deckout as f64 / n,
                     p_next_takes: c.next_takes as f64 / n,
+                    p_win: self.view.stakes.map(|_| c.win / n),
                     alive: c.alive,
                     mv: c.mv.clone().filter(|_| rank < MOVES_SHOWN),
                 }
@@ -715,6 +750,12 @@ pub fn move_label(mv: &Move, rules: &Rules) -> String {
     format!("{} · {} at", parts.join(" · "), name(mv.discard))
 }
 
+/// Candidates in order of merit: mean cost first, mean score gap between equals.
+fn merit(a: &Cand, b: &Cand) -> std::cmp::Ordering {
+    let tie = |c: &Cand| c.tie as f64 / c.scores.len().max(1) as f64;
+    mean(&a.scores).total_cmp(&mean(&b.scores)).then(tie(a).total_cmp(&tie(b)))
+}
+
 fn mean(v: &[i32]) -> f64 {
     if v.is_empty() {
         return f64::INFINITY;
@@ -739,7 +780,12 @@ const GAP_SCALE: f64 = 3.0;
 
 pub struct RolloutResult {
     /// GAP_SCALE × (my score − opponents' average); team against team when partnered.
+    /// With a known match situation: GAP_SCALE × the chance of losing the match, per mille.
     pub gap: i32,
+    /// Chance of winning the match in this outcome (0 when no match situation is known).
+    pub win: f32,
+    /// The plain score gap, for ordering outcomes that are level on `gap`.
+    pub tie: i32,
     pub own: i32,
     pub finish: bool,
     pub opened: bool,
@@ -837,11 +883,11 @@ fn conclude(view: &View, mut g: Game, out: Option<Outcome>, sv: &mut Solver, dep
     };
     let s = g.scores(&o);
     let team = view.rules.partners;
-    let (own, gap) = if team {
-        (s[0] + s[2], 3 * (s[0] + s[2] - s[1] - s[3]))
-    } else {
-        (s[0], 3 * s[0] - s[1] - s[2] - s[3])
-    };
+    let own = if team { s[0] + s[2] } else { s[0] };
+    let tie = g.gap3(&s, 0);
+    let loss = g.stakes.map(|st| st.loss(&s, team));
+    let gap = loss.map_or(tie, |l| (l * 3000.0).round() as i32);
+    let win = loss.map_or(0.0, |l| 1.0 - l as f32);
     let (finish, opp_finish) = match o {
         Outcome::Finished(f) => {
             let mine = f.player == 0 || (team && f.player == 2);
@@ -851,6 +897,8 @@ fn conclude(view: &View, mut g: Game, out: Option<Outcome>, sv: &mut Solver, dep
     };
     RolloutResult {
         gap,
+        win,
+        tie,
         own,
         finish,
         opened: g.players[0].opened != Opened::No || matches!(o, Outcome::Finished(f) if f.player == 0),
@@ -1022,6 +1070,7 @@ pub fn public_view(g: &Game, phase: Phase, taken: Option<Tile>) -> View {
         deck_count: g.deck.len() as u8,
         phase,
         taken,
+        stakes: g.stakes,
     }
 }
 
@@ -1056,6 +1105,7 @@ pub fn merge_reports(reports: &[Report]) -> Report {
             m.p_opp_finish = mix(m.p_opp_finish, c.p_opp_finish);
             m.p_deckout = mix(m.p_deckout, c.p_deckout);
             m.p_next_takes = mix(m.p_next_takes, c.p_next_takes);
+            m.p_win = m.p_win.zip(c.p_win).map(|(x, y)| mix(x, y));
             m.diff_se += if c.diff_se.is_finite() {
                 (c.diff_se * b).powi(2)
             } else {

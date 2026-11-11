@@ -2,6 +2,7 @@ use crate::meld::*;
 use crate::pairs::{pair_plan, pair_stats};
 use crate::policy::{LayStyle, OpenStyle, Policy};
 use crate::rules::{Rules, TakenJokerPenalty};
+use crate::stakes::Stakes;
 use crate::table::{JokerSlot, Side, Table, TableMeld};
 use crate::tile::*;
 use serde::{Deserialize, Serialize};
@@ -96,6 +97,8 @@ pub struct Game {
     pub seen: Counts,
     pub log: Option<Vec<Step>>,
     pub policy: [Policy; 4],
+    /// The match situation seat 0 is playing for, when known.
+    pub stakes: Option<Stakes>,
 }
 
 const MAX_TURNS: usize = 400;
@@ -979,6 +982,17 @@ impl Game {
         }
     }
 
+    /// What `p` is trying to make small, times three: the chance of losing the match (per mille)
+    /// when seat 0's match situation is known, otherwise the score gap.
+    pub fn cost3(&self, s: &[i32; 4], p: u8) -> i32 {
+        match self.stakes {
+            // Among lines with the same chance, the better score still decides: the gap rides along
+            // as a fraction of one per mille.
+            Some(st) if p == 0 => (st.loss(s, self.rules.partners) * 3000.0).round() as i32 * 128 + (self.gap3(s, p) / 64).clamp(-127, 127),
+            _ => self.gap3(s, p),
+        }
+    }
+
     /// One turn for `hero`, chosen by trying every plan and playing each out to the end of the hand.
     fn lookahead_turn(&mut self, sv: &mut Solver, hero: u8, deeper: u8) -> Option<Outcome> {
         self.table.new_turn();
@@ -1013,7 +1027,7 @@ impl Game {
                 None if deeper > 0 => sim.play_out_lookahead(sv, hero, deeper),
                 None => sim.play_out(sv),
             };
-            let gap = sim.gap3(&sim.scores(&end), hero);
+            let gap = sim.cost3(&sim.scores(&end), hero);
             if best.as_ref().is_none_or(|b| gap < b.0) {
                 best = Some((gap, g, res));
             }
@@ -1173,6 +1187,7 @@ impl Game {
             seen,
             log: None,
             policy: [Policy::default(); 4],
+            stakes: None,
         }
     }
 
@@ -1198,6 +1213,9 @@ impl Game {
             m.owner = (m.owner + 4 - k) % 4;
         }
         g.current = (g.current + 4 - k) % 4;
+        if k != 0 {
+            g.stakes = None;
+        }
         g
     }
 

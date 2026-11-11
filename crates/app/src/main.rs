@@ -310,6 +310,9 @@ fn App() -> impl IntoView {
                     Stage::Play => view! { <Wizard/> <TableView/> <MyRack/> <Details/> }.into_any(),
                     Stage::Over => view! { <Over/> <TableView/> }.into_any(),
                 }}
+                <Show when=move || st.with(|s| s.stage == Stage::Play || (s.stage == Stage::Setup && matches!(s.mode, Mode::Hand)))>
+                    <MatchBox/>
+                </Show>
             </main>
             <Show when=move || st.with(|s| s.keyboard_visible())>
                 <Keyboard/>
@@ -697,7 +700,14 @@ fn MyDraw() -> impl IntoView {
             (Some(d), Some(t)) => {
                 let diff = (d.mean - t.mean).abs();
                 let pick = if t.mean < d.mean { "Yandan al" } else { "Desteden çek" };
-                format!("Öneri: {pick} ({diff:.1} puan daha iyi)")
+                match d.p_win.zip(t.p_win) {
+                    Some((dw, tw)) => format!(
+                        "Öneri: {pick} (maçı kazanma %{:.1}, diğeri %{:.1})",
+                        dw.max(tw) * 100.0,
+                        dw.min(tw) * 100.0
+                    ),
+                    None => format!("Öneri: {pick} ({diff:.1} puan daha iyi)"),
+                }
             }
             (Some(_), None) if side.is_some() && !take_ok => "Yandaki taşı bu tur kullanamazsın, alınamaz.".to_string(),
             (None, None) if take_ok => "Hesaplanıyor…".to_string(),
@@ -834,10 +844,13 @@ fn Plan() -> impl IntoView {
                     let deep = if rep.deep { " · sonraki turun da hesaba katılıyor" } else { "" };
                     format!("{moves}{} senaryo{}{cut}{deep}", rep.iterations, if r.done { " · tamam" } else { " · netleşiyor…" })
                 });
-                let stats = cand.as_ref().map(|c| format!(
-                    "Beklenen: rakiplerden {} · bitirme {:.0}% · sağdaki attığın taşı alır {:.0}%",
-                    advantage(c), c.p_finish * 100.0, c.p_next_takes * 100.0
-                ));
+                let stats = cand.as_ref().map(|c| {
+                    let aim = match c.p_win {
+                        Some(w) => format!("Maçı kazanma ihtimali %{:.1}", w * 100.0),
+                        None => format!("Beklenen: rakiplerden {}", advantage(c)),
+                    };
+                    format!("{aim} · bitirme {:.0}% · sağdaki attığın taşı alır {:.0}%", c.p_finish * 100.0, c.p_next_takes * 100.0)
+                });
                 let list = steps.get().unwrap_or_default();
                 let none_to_lay = list.len() <= 1;
                 view! {
@@ -875,12 +888,13 @@ fn Alternatives() -> impl IntoView {
                     let d = c.decision;
                     let mv = c.mv.clone();
                     let behind = c.mean - top.mean;
-                    let note = if behind < 0.05 {
-                        "en iyi".to_string()
-                    } else if c.alive {
-                        format!("{behind:.1} geride (±{:.1})", c.diff_se)
-                    } else {
-                        format!("elendi · ~{behind:.0} geride")
+                    // Playing for the match the numbers are chances of losing, per mille.
+                    let note = match (c.p_win, top.p_win) {
+                        (Some(w), Some(best)) if best - w < 0.0005 => format!("kazanma %{:.1}", w * 100.0),
+                        (Some(w), Some(_)) => format!("kazanma %{:.1}{}", w * 100.0, if c.alive { "" } else { " · elendi" }),
+                        _ if behind < 0.05 => "en iyi".to_string(),
+                        _ if c.alive => format!("{behind:.1} geride (±{:.1})", c.diff_se),
+                        _ => format!("elendi · ~{behind:.0} geride"),
                     };
                     let note = format!("{note} · sağ alır {:.0}%", c.p_next_takes * 100.0);
                     view! {
@@ -959,6 +973,59 @@ fn TableView() -> impl IntoView {
                 }).collect_view().into_any()
             }}
         </section>
+    }
+}
+
+/// The match situation: which hand this is and how far behind I am. Entered by hand; optional.
+#[component]
+fn MatchBox() -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
+    let st = ctx.st;
+    let number = move |label: &'static str, get: fn(&State) -> i32, set: fn(&mut State, i32)| {
+        view! {
+            <label class="opt num">
+                <span>{label}</span>
+                <input type="number"
+                    prop:value=move || st.with(|s| get(s).to_string())
+                    on:change=move |ev| {
+                        if let Ok(v) = event_target_value(&ev).trim().parse::<i32>() {
+                            ctx.act(|s| { set(s, v); Ok(()) })
+                        }
+                    }
+                />
+            </label>
+        }
+    };
+    view! {
+        <details class="card matchbox">
+            <summary>
+                {move || st.with(|s| if s.match_on {
+                    let left = s.hands_total.saturating_sub(s.hand_no);
+                    format!("Maç durumu · {}. el / {} · {}", s.hand_no, s.hands_total, if left == 0 { "son el".to_string() } else { format!("{left} el kaldı") })
+                } else {
+                    "Maç durumu · kapalı (sadece bu ele göre oynuyor)".to_string()
+                })}
+            </summary>
+            <label class="opt">
+                <input type="checkbox"
+                    prop:checked=move || st.with(|s| s.match_on)
+                    on:change=move |ev| { let v = event_target_checked(&ev); ctx.act(|s| { s.match_on = v; Ok(()) }) }
+                />
+                "Maçı kazanma ihtimaline göre oyna"
+            </label>
+            <div class="hint">"Gerideyken risk alır, öndeyken garantiye oynar. Öndeysen puanı eksi yaz."</div>
+            {number("Kaçıncı eldeyiz", |s| s.hand_no as i32, |s, v| s.hand_no = v.clamp(1, 99) as u8)}
+            {number("Toplam kaç el", |s| s.hands_total as i32, |s, v| s.hands_total = v.clamp(1, 99) as u8)}
+            {move || if st.with(|s| s.rules.partners) {
+                number("Takım olarak kaç puan gerideyiz", |s| s.behind[0], |s, v| s.behind[0] = v).into_any()
+            } else {
+                view! {
+                    {number("Sağdakinden kaç puan gerideyim", |s| s.behind[0], |s, v| s.behind[0] = v)}
+                    {number("Karşıdakinden kaç puan gerideyim", |s| s.behind[1], |s, v| s.behind[1] = v)}
+                    {number("Soldakinden kaç puan gerideyim", |s| s.behind[2], |s, v| s.behind[2] = v)}
+                }.into_any()
+            }}
+        </details>
     }
 }
 

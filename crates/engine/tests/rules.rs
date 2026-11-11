@@ -37,6 +37,7 @@ fn game_with(rules: Rules, hands: [&str; 4]) -> Game {
         seen,
         log: None,
         policy: [Default::default(); 4],
+        stakes: None,
         rules,
     }
 }
@@ -831,4 +832,148 @@ fn exhaustive_analyzer_reports_explicit_moves() {
     assert!(matches!(top.decision, Decision::Play(_)));
     let steps = describe_move(&view, &mv);
     assert!(matches!(steps.last(), Some(Step::Discard { .. })));
+}
+
+// ---------- playing for the match, not the hand ----------
+
+use okey_engine::stakes::Stakes;
+
+#[test]
+fn last_hand_is_won_or_lost_on_the_spot() {
+    let close = Stakes {
+        hands_left: 0,
+        behind: [100, 100, 100],
+    };
+    assert_eq!(
+        close.loss(&[-101, 101, 101, 60], false),
+        0.0,
+        "a 100-point deficit is overturned against all three"
+    );
+    assert_eq!(close.loss(&[-101, 101, 101, -50], false), 1.0, "one rival stays ahead: not first");
+    let far = Stakes {
+        hands_left: 0,
+        behind: [300, 300, 300],
+    };
+    assert_eq!(far.loss(&[-101, 101, 101, 60], false), 1.0, "a plain finish cannot make up 300");
+    assert_eq!(far.loss(&[-404, 404, 404, 240], false), 0.0, "elden with okey can");
+}
+
+#[test]
+fn earlier_hands_leave_room_for_what_is_still_to_come() {
+    let level = Stakes {
+        hands_left: 5,
+        behind: [0, 0, 0],
+    };
+    assert!(
+        (level.loss(&[50, 50, 50, 50], false) - 0.875).abs() < 1e-6,
+        "level with three rivals: one chance in eight"
+    );
+    let team = Stakes {
+        hands_left: 3,
+        behind: [0, 0, 0],
+    };
+    assert!(
+        (team.loss(&[10, 20, 30, 20], true) - 0.5).abs() < 1e-6,
+        "teams level after this hand"
+    );
+    let behind = Stakes {
+        hands_left: 1,
+        behind: [200, 0, 0],
+    };
+    let ahead = Stakes {
+        hands_left: 1,
+        behind: [-200, 0, 0],
+    };
+    assert!(behind.loss(&[0; 4], true) > 0.75 && ahead.loss(&[0; 4], true) < 0.25);
+}
+
+/// 18 tiles are my own melds; S9-S10 and M5 fit the table, and I hold an okey.
+/// I can finish right now (elden with the okey inside a run, or open and lay off), or keep waiting.
+fn finish_or_wait(stakes: Option<Stakes>) -> View {
+    let rules = Rules::default();
+    let meld = |owner: u8, s: &str| TableMeld::new(owner, classify(&s.split_whitespace().map(t).collect::<Vec<_>>(), &rules).unwrap());
+    let mut players = vec![PlayerView::default(); 4];
+    players[3].opened = Opened::Melds;
+    players[3].open_value = 120;
+    players[3].hand_len = Some(9);
+    players[1].hand_len = Some(21);
+    players[2].hand_len = Some(21);
+    players[1].discards = "K1 Si9 M7".split_whitespace().map(t).collect();
+    players[2].discards = "Si1 K6 S13".split_whitespace().map(t).collect();
+    players[3].discards = "M1 Si12".split_whitespace().map(t).collect();
+    View {
+        table: vec![
+            meld(3, "S6 S7 S8"),
+            meld(3, "K5 S5 Si5"),
+            meld(3, "Si9 Si10 Si11 Si12"),
+            meld(3, "K1 K2 K3"),
+        ],
+        gosterge: t("M8"),
+        hand: "K9 K10 K11 K12 K13 M10 M11 M12 M13 S1 S2 S3 Si5 Si6 Si7 K4 M4 Si4 S9 S10 M5 OK"
+            .split_whitespace()
+            .map(t)
+            .collect(),
+        players,
+        pairs_added: [0; 4],
+        deck_count: 12,
+        phase: Phase::AfterDraw,
+        taken: None,
+        stakes,
+        rules,
+    }
+}
+
+fn ends_the_hand(view: &View, c: &CandReport) -> bool {
+    let steps = match &c.mv {
+        Some(mv) => describe_move(view, mv),
+        None => describe(view, c.decision),
+    };
+    matches!(steps.last(), Some(Step::Discard { finish: true, .. }))
+}
+
+#[test]
+fn without_match_stakes_the_sure_finish_is_taken() {
+    let view = finish_or_wait(None);
+    let mut a = Analyzer::new(view.clone(), 3).unwrap();
+    a.step(300);
+    let r = a.report();
+    assert!(ends_the_hand(&view, &r.candidates[0]), "best: {}", r.candidates[0].label);
+    assert!(r.candidates[0].p_win.is_none());
+}
+
+#[test]
+fn far_ahead_in_the_last_hand_the_sure_finish_is_taken() {
+    let view = finish_or_wait(Some(Stakes {
+        hands_left: 0,
+        behind: [-400, -400, -400],
+    }));
+    let mut a = Analyzer::new(view.clone(), 3).unwrap();
+    a.step(300);
+    let r = a.report();
+    assert!(ends_the_hand(&view, &r.candidates[0]), "best: {}", r.candidates[0].label);
+    assert!(r.candidates[0].p_win.unwrap() > 0.99);
+}
+
+#[test]
+fn far_behind_in_the_last_hand_a_finish_that_cannot_win_is_refused() {
+    // 500 behind everyone: finishing now (at best elden, doubled) still loses the match.
+    // Only an elden finish that also throws the okey, four-fold, can turn it around, so the hand must go on.
+    let view = finish_or_wait(Some(Stakes {
+        hands_left: 0,
+        behind: [500, 500, 500],
+    }));
+    let mut a = Analyzer::new(view.clone(), 3).unwrap();
+    a.step(400);
+    let r = a.report();
+    let best = &r.candidates[0];
+    assert!(!ends_the_hand(&view, best), "it must keep playing, but chose: {}", best.label);
+    assert!(best.p_win.unwrap() > 0.0, "waiting keeps a real chance alive");
+    assert!(
+        describe(&view, best.decision).iter().all(|s| matches!(s, Step::Discard { .. })),
+        "nothing goes on the table yet: {}",
+        best.label
+    );
+    for c in r.candidates.iter().filter(|c| ends_the_hand(&view, c)) {
+        assert!(c.p_win.unwrap() < 0.01, "finishing now cannot win: {} ({:?})", c.label, c.p_win);
+    }
 }

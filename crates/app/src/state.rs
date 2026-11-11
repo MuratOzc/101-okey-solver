@@ -4,6 +4,7 @@ use okey_engine::meld::{Shape, Solver};
 use okey_engine::moves::Move;
 use okey_engine::rng::Rng;
 use okey_engine::rules::Rules;
+use okey_engine::stakes::Stakes;
 use okey_engine::table::{JokerSlot, LayOption, Table, TableMeld, classify};
 use okey_engine::tile::*;
 use serde::{Deserialize, Serialize};
@@ -54,6 +55,13 @@ pub struct State {
     pub buffer: Vec<Tile>,
     pub mode: Mode,
     pub result: Option<String>,
+    /// Play for the match (chance of ending on top) instead of for this hand's points.
+    pub match_on: bool,
+    pub hand_no: u8,
+    pub hands_total: u8,
+    /// Points I trail the player on my right, across, on my left (negative when ahead).
+    /// With partners only the first is used, for the two teams.
+    pub behind: [i32; 3],
 }
 
 impl Default for State {
@@ -75,6 +83,10 @@ impl Default for State {
             buffer: vec![],
             mode: Mode::Gosterge,
             result: None,
+            match_on: false,
+            hand_no: 1,
+            hands_total: 11,
+            behind: [0; 3],
         }
     }
 }
@@ -96,6 +108,10 @@ impl State {
         State {
             rules: self.rules.clone(),
             starter: (self.starter + 1) % 4,
+            match_on: self.match_on,
+            hand_no: (self.hand_no + 1).min(self.hands_total),
+            hands_total: self.hands_total,
+            behind: self.behind,
             ..State::default()
         }
     }
@@ -582,6 +598,13 @@ impl State {
         self.mode = Mode::Idle;
     }
 
+    pub fn stakes(&self) -> Option<Stakes> {
+        self.match_on.then(|| Stakes {
+            hands_left: self.hands_total.saturating_sub(self.hand_no),
+            behind: if self.rules.partners { [self.behind[0]; 3] } else { self.behind },
+        })
+    }
+
     /// The analysis input, when it is my turn.
     pub fn view(&self) -> Option<View> {
         if self.stage != Stage::Play || self.turn != 0 || !self.opening_complete() {
@@ -601,6 +624,7 @@ impl State {
             deck_count: self.deck_count,
             phase,
             taken: self.taken,
+            stakes: self.stakes(),
         })
     }
 
@@ -840,6 +864,22 @@ mod tests {
         s.discard(1, t("K7")).unwrap();
         s.opp_draw().unwrap();
         assert_eq!(s.opening_need(), (107, 5), "the next opener needs more than 106");
+    }
+
+    #[test]
+    fn match_situation_reaches_the_analysis_and_carries_to_the_next_hand() {
+        let mut s = started();
+        assert!(s.view().unwrap().stakes.is_none());
+        s.match_on = true;
+        s.hand_no = 10;
+        s.behind = [250, 40, -30];
+        let st = s.view().unwrap().stakes.unwrap();
+        assert_eq!((st.hands_left, st.behind), (1, [250, 40, -30]));
+        let next = s.new_hand();
+        assert_eq!((next.match_on, next.hand_no, next.behind), (true, 11, [250, 40, -30]));
+        assert_eq!(next.new_hand().hand_no, 11, "the hand number stops at the last hand");
+        s.rules.partners = true;
+        assert_eq!(s.view().unwrap().stakes.unwrap().behind, [250; 3]);
     }
 
     #[test]

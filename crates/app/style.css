@@ -163,10 +163,10 @@ table.grid td sub { display: block; line-height: 1; }
 table.grid td sub { font-size: 10px; color: var(--muted); }
 table.grid td.u0 { opacity: .25; }
 
-.settings .opt { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
-.settings .opt.num { justify-content: space-between; }
-.settings .opt.num input { width: 80px; font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text); }
-.settings input[type="checkbox"] { width: 20px; height: 20px; }
+.settings .opt, .matchbox .opt { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.settings .opt.num, .matchbox .opt.num { justify-content: space-between; }
+.settings .opt.num input, .matchbox .opt.num input { width: 80px; font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text); }
+.settings input[type="checkbox"], .matchbox input[type="checkbox"] { width: 20px; height: 20px; }
 
 nav.kbd {
   position: fixed;

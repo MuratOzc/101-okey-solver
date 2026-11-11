@@ -258,6 +258,7 @@ fn sample_view(phase: Phase) -> View {
         deck_count: 15,
         phase,
         taken: None,
+        stakes: None,
     }
 }
 
@@ -319,6 +320,7 @@ fn describe_lists_physical_steps() {
         deck_count: 20,
         phase: Phase::AfterDraw,
         taken: None,
+        stakes: None,
     };
     let steps = describe(
         &view,

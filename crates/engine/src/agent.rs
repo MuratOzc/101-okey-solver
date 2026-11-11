@@ -6,6 +6,7 @@ use crate::game::{Game, Outcome};
 use crate::meld::Solver;
 use crate::moves::Move;
 use crate::policy::Policy;
+use crate::stakes::erf;
 use crate::tile::Tile;
 
 pub trait Agent {
@@ -228,12 +229,4 @@ pub fn game_win_chance(diffs: &[f32], hands: u32) -> f64 {
     }
     let z = -mean * (hands as f64).sqrt() / var.sqrt();
     0.5 * (1.0 + erf(z / std::f64::consts::SQRT_2))
-}
-
-/// Abramowitz–Stegun 7.1.26, accurate to about 1e-7.
-fn erf(x: f64) -> f64 {
-    let t = 1.0 / (1.0 + 0.3275911 * x.abs());
-    let poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
-    let y = 1.0 - poly * (-x * x).exp();
-    if x >= 0.0 { y } else { -y }
 }

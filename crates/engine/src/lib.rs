@@ -7,5 +7,6 @@ pub mod pairs;
 pub mod policy;
 pub mod rng;
 pub mod rules;
+pub mod stakes;
 pub mod table;
 pub mod tile;
