@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/engine", "crates/app"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[workspace.lints.clippy]
+result_unit_err = "allow"
+type_complexity = "allow"
+len_without_is_empty = "allow"
+too_many_arguments = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"

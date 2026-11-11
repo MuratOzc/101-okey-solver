@@ -1,0 +1,9 @@
+{
+  "name": "101 Çözücü",
+  "short_name": "101",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#14532d",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

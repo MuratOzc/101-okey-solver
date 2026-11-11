@@ -1,0 +1,869 @@
+use okey_engine::analysis::{Decision, Phase, PlayerView, View};
+use okey_engine::game::{Opened, Outcome};
+use okey_engine::meld::{Shape, Solver};
+use okey_engine::moves::Move;
+use okey_engine::rng::Rng;
+use okey_engine::rules::Rules;
+use okey_engine::table::{JokerSlot, LayOption, Table, TableMeld, classify};
+use okey_engine::tile::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum Stage {
+    Setup,
+    Play,
+    Over,
+}
+
+/// The single thing the app is asking for right now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum Mode {
+    Gosterge,
+    Starter,
+    Hand,
+    /// Waiting on the current player's next action.
+    Idle,
+    PickDraw,
+    MeldEntry,
+    PairEntry {
+        owner: u8,
+        okey: bool,
+    },
+    MeldMenu(usize),
+    Manual,
+}
+
+pub const SEAT_NAMES: [&str; 4] = ["Ben", "Sağ", "Karşı", "Sol"];
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct State {
+    pub rules: Rules,
+    pub stage: Stage,
+    pub gosterge: Option<Tile>,
+    pub hand: Vec<Tile>,
+    pub players: Vec<PlayerView>,
+    pub table: Table,
+    pub deck_count: u8,
+    pub turn: u8,
+    pub starter: u8,
+    pub drawn: bool,
+    pub taken: Option<Tile>,
+    pub opened_this_turn: bool,
+    pub first_turn: bool,
+    pub buffer: Vec<Tile>,
+    pub mode: Mode,
+    pub result: Option<String>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        State {
+            rules: Rules::default(),
+            stage: Stage::Setup,
+            gosterge: None,
+            hand: vec![],
+            players: vec![PlayerView::default(); 4],
+            table: Table::default(),
+            deck_count: 0,
+            turn: 0,
+            starter: 0,
+            drawn: false,
+            taken: None,
+            opened_this_turn: false,
+            first_turn: true,
+            buffer: vec![],
+            mode: Mode::Gosterge,
+            result: None,
+        }
+    }
+}
+
+type R = Result<(), String>;
+
+fn remove_one(v: &mut Vec<Tile>, t: Tile) -> bool {
+    match v.iter().position(|&x| x == t) {
+        Some(i) => {
+            v.remove(i);
+            true
+        }
+        None => false,
+    }
+}
+
+impl State {
+    pub fn new_hand(&self) -> State {
+        State {
+            rules: self.rules.clone(),
+            starter: (self.starter + 1) % 4,
+            ..State::default()
+        }
+    }
+
+    pub fn expected_hand(&self) -> usize {
+        self.rules.hand_size as usize + if self.starter == 0 { self.rules.starter_extra as usize } else { 0 }
+    }
+
+    pub fn seen(&self) -> Counts {
+        let mut c = counts_from(&self.hand);
+        if let Some(g) = self.gosterge {
+            c[g as usize] += 1;
+        }
+        for p in &self.players {
+            for &t in p.discards.iter().chain(&p.known) {
+                c[t as usize] += 1;
+            }
+        }
+        for t in self.table.tiles() {
+            c[t as usize] += 1;
+        }
+        c
+    }
+
+    /// Whether the player whose turn it is may lay tiles or discard (has drawn, or starts the hand).
+    pub fn may_act(&self) -> bool {
+        self.drawn || self.first_turn
+    }
+
+    pub fn cur(&self) -> &PlayerView {
+        &self.players[self.turn as usize]
+    }
+
+    /// How many more copies of `t` the current player could still produce.
+    fn available(&self, t: Tile) -> u8 {
+        let in_buffer = self.buffer.iter().filter(|&&b| b == t).count() as u8;
+        let have = if self.turn == 0 {
+            self.hand.iter().filter(|&&h| h == t).count() as u8
+        } else {
+            let known = self.cur().known.iter().filter(|&&k| k == t).count() as u8;
+            2u8.saturating_sub(self.seen()[t as usize]) + known
+        };
+        have.saturating_sub(in_buffer)
+    }
+
+    /// Whether the keyboard key for `t` makes sense in the current mode.
+    pub fn key_enabled(&self, t: Tile) -> bool {
+        if !self.keyboard_visible() {
+            return false;
+        }
+        match self.mode {
+            Mode::Gosterge => t != JOKER,
+            Mode::Hand | Mode::PickDraw => self.seen()[t as usize] < 2,
+            Mode::Idle | Mode::MeldEntry => self.available(t) > 0,
+            Mode::PairEntry { okey: true, .. } => t != JOKER && self.available(t) > 0 && self.available(JOKER) > 0,
+            Mode::PairEntry { okey: false, .. } => t != JOKER && self.available(t) >= 2,
+            _ => false,
+        }
+    }
+
+    pub fn keyboard_visible(&self) -> bool {
+        match (self.stage, self.mode) {
+            (Stage::Setup, Mode::Gosterge | Mode::Hand) => true,
+            (Stage::Play, Mode::PickDraw | Mode::PairEntry { .. }) => true,
+            (Stage::Play, Mode::MeldEntry) => self.turn != 0,
+            (Stage::Play, Mode::Idle) => self.turn != 0 && self.may_act(),
+            _ => false,
+        }
+    }
+
+    pub fn key(&mut self, t: Tile) -> R {
+        if !self.key_enabled(t) {
+            return Err(format!("{} şu an girilemez", name(t)));
+        }
+        match self.mode {
+            Mode::Gosterge => {
+                self.gosterge = Some(t);
+                self.mode = if self.hand.is_empty() { Mode::Starter } else { Mode::Hand };
+                Ok(())
+            }
+            Mode::Hand => {
+                if self.hand.len() >= self.expected_hand() {
+                    return Err(format!("Elinde {} taş olmalı", self.expected_hand()));
+                }
+                self.hand.push(t);
+                self.hand.sort_unstable();
+                Ok(())
+            }
+            Mode::PickDraw => self.my_draw(t),
+            Mode::Idle => self.discard(self.turn, t),
+            Mode::MeldEntry => {
+                self.buffer.push(t);
+                Ok(())
+            }
+            Mode::PairEntry { owner, okey } => self.lay_pair(owner, t, okey),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn remove_from_hand(&mut self, i: usize) {
+        if i < self.hand.len() {
+            self.hand.remove(i);
+        }
+    }
+
+    pub fn set_starter(&mut self, p: u8) {
+        self.starter = p;
+        self.hand.truncate(self.expected_hand());
+        self.mode = Mode::Hand;
+    }
+
+    pub fn start(&mut self) -> R {
+        let Some(g) = self.gosterge else {
+            return Err("Önce göstergeyi seç".into());
+        };
+        if self.hand.len() != self.expected_hand() {
+            return Err(format!("Elinde {} taş olmalı, şu an {}", self.expected_hand(), self.hand.len()));
+        }
+        let dealt = self.rules.hand_size as u32 * 4 + self.rules.starter_extra as u32;
+        self.deck_count = (106 - dealt - 1) as u8;
+        for p in 1..4u8 {
+            let extra = if self.starter == p { self.rules.starter_extra } else { 0 };
+            self.players[p as usize].hand_len = Some(self.rules.hand_size + extra);
+        }
+        self.players[0].gosterge_bonus = self.hand.contains(&g);
+        self.turn = self.starter;
+        self.first_turn = true;
+        self.drawn = false;
+        self.stage = Stage::Play;
+        self.mode = Mode::Idle;
+        Ok(())
+    }
+
+    fn may_draw(&self) -> R {
+        if self.drawn {
+            return Err("Bu turda zaten taş çekildi".into());
+        }
+        if self.first_turn {
+            return Err("Başlayan ilk turda çekmez".into());
+        }
+        Ok(())
+    }
+
+    pub fn opp_draw(&mut self) -> R {
+        self.may_draw()?;
+        if self.deck_count == 0 {
+            return Err("Deste bitti".into());
+        }
+        let p = self.turn as usize;
+        self.deck_count -= 1;
+        self.players[p].hand_len = Some(self.players[p].hand_len.unwrap_or(21) + 1);
+        self.drawn = true;
+        Ok(())
+    }
+
+    pub fn prev(p: u8) -> u8 {
+        (p + 3) % 4
+    }
+
+    pub fn side_tile(&self) -> Option<Tile> {
+        self.players[Self::prev(self.turn) as usize].discards.last().copied()
+    }
+
+    /// Whether I may take the side tile: I must be able to use it this turn.
+    pub fn can_take(&self) -> bool {
+        if self.turn != 0 || self.may_act() {
+            return false;
+        }
+        let (Some(t), Some(view)) = (self.side_tile(), self.view()) else {
+            return false;
+        };
+        if !self.rules.take_must_use {
+            return true;
+        }
+        let mut g = view.determinize(&mut Rng::new(3));
+        g.table = self.table.clone();
+        g.can_use_taken(&mut Solver::new(&self.rules), 0, t)
+    }
+
+    pub fn take_side(&mut self) -> R {
+        self.may_draw()?;
+        let from = Self::prev(self.turn) as usize;
+        let Some(t) = self.players[from].discards.pop() else {
+            return Err("Yerde alınacak taş yok".into());
+        };
+        let p = self.turn as usize;
+        if p == 0 {
+            self.hand.push(t);
+            self.hand.sort_unstable();
+        } else {
+            self.players[p].known.push(t);
+            self.players[p].hand_len = Some(self.players[p].hand_len.unwrap_or(21) + 1);
+        }
+        self.taken = Some(t);
+        self.drawn = true;
+        self.mode = Mode::Idle;
+        Ok(())
+    }
+
+    pub fn my_draw(&mut self, t: Tile) -> R {
+        self.may_draw()?;
+        if self.deck_count == 0 {
+            return Err("Deste bitti".into());
+        }
+        self.hand.push(t);
+        self.hand.sort_unstable();
+        self.deck_count -= 1;
+        self.drawn = true;
+        self.mode = Mode::Idle;
+        Ok(())
+    }
+
+    pub fn discard(&mut self, p: u8, t: Tile) -> R {
+        if p != self.turn {
+            return Err("Sıra o oyuncuda değil".into());
+        }
+        if !self.may_act() {
+            return Err("Önce taş çekilmeli (desteden ya da yandan)".into());
+        }
+        let finishing = p == 0 && self.hand.len() == 1;
+        if !self.opening_complete() && !finishing {
+            let progress = self.opening_progress().unwrap_or_default();
+            return Err(format!(
+                "{progress}. Açılış tamamlanmadan taş atılamaz: eksik peri gir ya da Geri al."
+            ));
+        }
+        if p == 0 {
+            if !remove_one(&mut self.hand, t) {
+                return Err(format!("Elinde {} yok", name(t)));
+            }
+            if self.hand.is_empty() {
+                self.finish(0, Some(t));
+                return Ok(());
+            }
+        } else {
+            let pv = &mut self.players[p as usize];
+            remove_one(&mut pv.known, t);
+            pv.hand_len = Some(pv.hand_len.unwrap_or(22).saturating_sub(1));
+        }
+        self.players[p as usize].discards.push(t);
+        self.next_turn();
+        Ok(())
+    }
+
+    fn next_turn(&mut self) {
+        self.turn = (self.turn + 1) % 4;
+        self.drawn = false;
+        self.taken = None;
+        self.opened_this_turn = false;
+        self.first_turn = false;
+        self.buffer.clear();
+        self.table.new_turn();
+        self.mode = Mode::Idle;
+    }
+
+    /// Remove `tiles` from the current player (my hand, or an opponent's known tiles and count).
+    fn spend(&mut self, tiles: &[Tile]) -> R {
+        let p = self.turn as usize;
+        if p == 0 {
+            let mut h = self.hand.clone();
+            for &t in tiles {
+                if !remove_one(&mut h, t) {
+                    return Err(format!("Elinde {} yok", name(t)));
+                }
+            }
+            self.hand = h;
+        } else {
+            let pv = &mut self.players[p];
+            for &t in tiles {
+                remove_one(&mut pv.known, t);
+            }
+            pv.hand_len = Some(pv.hand_len.unwrap_or(21).saturating_sub(tiles.len() as u8));
+        }
+        if self.taken.is_some_and(|t| tiles.contains(&t)) {
+            self.taken = None;
+        }
+        Ok(())
+    }
+
+    /// What the current player's opening must reach: (meld points, pair count).
+    pub fn opening_need(&self) -> (i32, u8) {
+        let r = &self.rules;
+        let (mut meld, mut pair) = (r.open_min, r.pair_min);
+        if r.katlamali {
+            for (i, p) in self.players.iter().enumerate() {
+                if i == self.turn as usize && self.opened_this_turn {
+                    continue;
+                }
+                match p.opened {
+                    Opened::Melds => meld = meld.max(p.open_value + r.raise_meld_by),
+                    Opened::Pairs => pair = pair.max(p.open_value as u8 + r.raise_pair_by),
+                    Opened::No => {}
+                }
+            }
+        }
+        (meld, pair)
+    }
+
+    /// False while the current player has started opening this turn but is still short of the threshold.
+    pub fn opening_complete(&self) -> bool {
+        if !self.opened_this_turn {
+            return true;
+        }
+        let (meld, pair) = self.opening_need();
+        match self.cur().opened {
+            Opened::Melds => self.cur().open_value >= meld,
+            Opened::Pairs => self.cur().open_value >= pair as i32,
+            Opened::No => true,
+        }
+    }
+
+    /// "87 / 101" style progress for an opening in progress.
+    pub fn opening_progress(&self) -> Option<String> {
+        if !self.opened_this_turn {
+            return None;
+        }
+        let (meld, pair) = self.opening_need();
+        Some(match self.cur().opened {
+            Opened::Pairs => format!("Açılış: {} / {} çift", self.cur().open_value, pair),
+            _ => format!("Açılış: {} / {} puan", self.cur().open_value, meld),
+        })
+    }
+
+    pub fn buffer_shape(&self) -> Option<Shape> {
+        classify(&self.buffer, &self.rules)
+    }
+
+    /// Why the buffer cannot be laid as a new meld right now, if it cannot.
+    pub fn meld_problem(&self) -> Option<String> {
+        if self.buffer.is_empty() {
+            return Some("Taşlara sırayla dokun".into());
+        }
+        let Some(shape) = self.buffer_shape() else {
+            return Some("Henüz geçerli bir per değil".into());
+        };
+        let as_pair = shape.is_pair();
+        match self.cur().opened {
+            Opened::Melds if as_pair => Some("Perle açan çift indiremez (çift açana işleyebilir)".into()),
+            Opened::Pairs if !as_pair && !self.rules.pair_opener_can_meld => Some("Çiftle açan seri/grup indiremez".into()),
+            Opened::Pairs if as_pair && !self.opened_this_turn && self.table.pair_room(self.turn, &self.rules) == 0 => {
+                Some(format!("Bu tur en fazla {} çift", self.rules.pairs_per_turn))
+            }
+            _ if matches!(shape, Shape::Run { .. }) && shape.len() > self.rules.max_run_len => {
+                Some(format!("Yeni seri en fazla {} taş", self.rules.max_run_len))
+            }
+            _ => None,
+        }
+    }
+
+    /// The current player lays the buffer down as a new meld (or pair).
+    pub fn lay_meld(&mut self) -> R {
+        if let Some(why) = self.meld_problem() {
+            return Err(why);
+        }
+        let p = self.turn;
+        let shape = self.buffer_shape().ok_or("Geçersiz per")?;
+        let as_pair = shape.is_pair();
+        let tiles = self.buffer.clone();
+        self.spend(&tiles)?;
+        let value = if as_pair { 1 } else { shape.open_value(&self.rules) };
+        let opening = self.opened_this_turn;
+        let pv = &mut self.players[p as usize];
+        if pv.opened == Opened::No {
+            pv.opened = if as_pair { Opened::Pairs } else { Opened::Melds };
+            pv.open_value = value;
+            self.opened_this_turn = true;
+        } else if opening {
+            pv.open_value += value;
+        } else if as_pair {
+            self.table.pairs_added[p as usize] += 1;
+        }
+        self.table.melds.push(TableMeld::new(p, shape));
+        self.buffer.clear();
+        Ok(())
+    }
+
+    pub fn can_lay_off(&self) -> bool {
+        if self.stage != Stage::Play || !self.may_act() || !self.opening_complete() {
+            return false;
+        }
+        match self.cur().opened {
+            Opened::No => false,
+            Opened::Melds => true,
+            Opened::Pairs => self.rules.pair_opener_can_layoff,
+        }
+    }
+
+    /// Single tiles the current player could lay on meld `idx`.
+    pub fn lay_options(&self, idx: usize) -> Vec<LayOption> {
+        if !self.can_lay_off() {
+            return vec![];
+        }
+        let Some(m) = self.table.melds.get(idx) else { return vec![] };
+        m.options(&self.rules).into_iter().filter(|o| self.available(o.tile) > 0).collect()
+    }
+
+    pub fn lay_option(&mut self, idx: usize, o: LayOption) -> R {
+        if !self.lay_options(idx).contains(&o) {
+            return Err("Bu taş bu pere işlenemez".into());
+        }
+        if self.table.lay_off_on(idx, o.tile, Some(o.side), &self.rules).is_none() {
+            return Err("Bu taş bu pere işlenemez".into());
+        }
+        self.spend(&[o.tile])
+    }
+
+    /// Okey swaps the current player could make on meld `idx`.
+    pub fn swap_options(&self, idx: usize) -> Vec<JokerSlot> {
+        let opened = self.cur().opened != Opened::No && self.opening_complete();
+        if !self.rules.joker_retrieve || self.stage != Stage::Play || !self.may_act() || !opened {
+            return vec![];
+        }
+        self.table
+            .joker_slots(&self.rules)
+            .into_iter()
+            .filter(|s| s.meld == idx && s.tiles.iter().all(|&t| self.available(t) > 0))
+            .collect()
+    }
+
+    pub fn swap(&mut self, slot: &JokerSlot) -> R {
+        if !self.swap_options(slot.meld).contains(slot) {
+            return Err("Bu perden okey alınamaz".into());
+        }
+        let tiles = slot.tiles.clone();
+        self.spend(&tiles)?;
+        self.table.swap_joker(slot);
+        for _ in 0..slot.jokers {
+            if self.turn == 0 {
+                self.hand.push(JOKER);
+            } else {
+                let pv = &mut self.players[self.turn as usize];
+                pv.known.push(JOKER);
+                pv.hand_len = Some(pv.hand_len.unwrap_or(21) + 1);
+            }
+        }
+        self.hand.sort_unstable();
+        Ok(())
+    }
+
+    /// Whether the current player may add pairs to `owner`'s pair area this turn.
+    pub fn can_add_pair(&self, owner: u8) -> bool {
+        if self.stage != Stage::Play || !self.may_act() || !self.opening_complete() || self.table.pair_room(owner, &self.rules) == 0 {
+            return false;
+        }
+        match self.cur().opened {
+            Opened::No => false,
+            Opened::Pairs => owner == self.turn,
+            Opened::Melds => self.rules.pairs_onto_pair_opener,
+        }
+    }
+
+    fn lay_pair(&mut self, owner: u8, t: Tile, okey: bool) -> R {
+        if !self.can_add_pair(owner) {
+            return Err(format!("Bu tur en fazla {} çift işlenir", self.rules.pairs_per_turn));
+        }
+        let tiles = if okey { vec![t, JOKER] } else { vec![t, t] };
+        self.spend(&tiles)?;
+        self.table.pairs_added[owner as usize] += 1;
+        self.table.melds.push(TableMeld::new(owner, Shape::Pair { tile: t, joker: okey }));
+        Ok(())
+    }
+
+    /// Whether tapping meld `idx` offers the current player anything.
+    pub fn meld_tappable(&self, idx: usize) -> bool {
+        let Some(m) = self.table.melds.get(idx) else { return false };
+        !self.lay_options(idx).is_empty() || !self.swap_options(idx).is_empty() || (m.shape.is_pair() && self.can_add_pair(m.owner))
+    }
+
+    pub fn finish(&mut self, p: u8, last: Option<Tile>) {
+        if let Some(t) = last {
+            if p == 0 {
+                remove_one(&mut self.hand, t);
+            }
+            self.players[p as usize].discards.push(t);
+        }
+        self.result = Some(format!("{} bitirdi", SEAT_NAMES[p as usize]));
+        self.stage = Stage::Over;
+        self.mode = Mode::Idle;
+    }
+
+    pub fn deck_out(&mut self) {
+        self.result = Some("Deste bitti, kimse bitiremedi".into());
+        self.stage = Stage::Over;
+        self.mode = Mode::Idle;
+    }
+
+    /// The analysis input, when it is my turn.
+    pub fn view(&self) -> Option<View> {
+        if self.stage != Stage::Play || self.turn != 0 || !self.opening_complete() {
+            return None;
+        }
+        self.view_as(if self.may_act() { Phase::AfterDraw } else { Phase::BeforeDraw })
+    }
+
+    pub fn view_as(&self, phase: Phase) -> Option<View> {
+        Some(View {
+            rules: self.rules.clone(),
+            gosterge: self.gosterge?,
+            hand: self.hand.clone(),
+            players: self.players.clone(),
+            table: self.table.melds.clone(),
+            pairs_added: self.table.pairs_added,
+            deck_count: self.deck_count,
+            phase,
+            taken: self.taken,
+        })
+    }
+
+    /// Carry out an explicit move (steps, then discard) for me on the real state.
+    pub fn apply_move(&mut self, mv: &Move) -> R {
+        let view = self.view().ok_or("Sıra sende değil")?;
+        let mut g = view.determinize(&mut Rng::new(3));
+        let before = g.table.melds.len();
+        let was_unopened = self.players[0].opened == Opened::No;
+        let res = g
+            .play_move(0, mv, self.taken)
+            .map_err(|_| "Bu hamle artık geçerli değil".to_string())?;
+        let laid: i32 = g.table.melds[before..]
+            .iter()
+            .filter(|m| m.owner == 0)
+            .map(|m| if m.shape.is_pair() { 1 } else { m.shape.open_value(&self.rules) })
+            .sum();
+        self.table = g.table.clone();
+        self.hand = tiles_of(&g.players[0].hand);
+        self.players[0].opened = g.players[0].opened;
+        if was_unopened && g.players[0].opened != Opened::No {
+            self.players[0].open_value = laid;
+        }
+        self.taken = None;
+        self.buffer.clear();
+        self.mode = Mode::Idle;
+        match res {
+            Some(Outcome::Finished(f)) => {
+                self.hand.push(f.last);
+                self.finish(0, Some(f.last));
+            }
+            Some(Outcome::DeckOut) => self.deck_out(),
+            None => {
+                self.players[0].discards.push(mv.discard);
+                self.next_turn();
+            }
+        }
+        Ok(())
+    }
+
+    /// Carry out an analysed decision for me on the real state.
+    pub fn apply(&mut self, d: Decision) -> R {
+        let view = self.view().ok_or("Sıra sende değil")?;
+        match d {
+            Decision::Take => self.take_side(),
+            Decision::Draw => {
+                self.may_draw()?;
+                self.mode = Mode::PickDraw;
+                Ok(())
+            }
+            Decision::Play(_) => Err("Bu hamlenin adımları eksik".into()),
+            Decision::Act { choice, discard } => {
+                let mut sv = Solver::new(&self.rules);
+                let mut g = view.determinize(&mut Rng::new(3));
+                let before = g.table.melds.len();
+                let was_unopened = self.players[0].opened == Opened::No;
+                let res = g
+                    .apply_choice(&mut sv, 0, choice, self.taken)
+                    .map_err(|_| "Bu hamle artık geçerli değil".to_string())?;
+                let laid: i32 = g.table.melds[before..]
+                    .iter()
+                    .filter(|m| m.owner == 0)
+                    .map(|m| if m.shape.is_pair() { 1 } else { m.shape.open_value(&self.rules) })
+                    .sum();
+                self.table = g.table.clone();
+                self.hand = tiles_of(&g.players[0].hand);
+                self.players[0].opened = g.players[0].opened;
+                if was_unopened && g.players[0].opened != Opened::No {
+                    self.players[0].open_value = laid;
+                    self.opened_this_turn = true;
+                }
+                self.taken = None;
+                self.buffer.clear();
+                self.mode = Mode::Idle;
+                match res {
+                    Some(Outcome::Finished(f)) => {
+                        self.hand.push(f.last);
+                        self.finish(0, Some(f.last));
+                        Ok(())
+                    }
+                    Some(Outcome::DeckOut) => {
+                        self.deck_out();
+                        Ok(())
+                    }
+                    None => {
+                        let t = discard.ok_or("Atılacak taş seçilmedi")?;
+                        self.discard(0, t)
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use okey_engine::table::Side;
+
+    fn t(s: &str) -> Tile {
+        parse(s).unwrap()
+    }
+
+    fn started() -> State {
+        let mut s = State::default();
+        s.key(t("S7")).unwrap();
+        assert_eq!(s.mode, Mode::Starter);
+        s.set_starter(0);
+        let hand = "K1 K2 K3 K4 K5 M9 M10 M11 S1 S1 Si4 Si5 Si6 K12 M12 S12 Si12 M3 M4 S9 Si13 K13";
+        for x in hand.split_whitespace() {
+            s.key(t(x)).unwrap();
+        }
+        s.start().unwrap();
+        s
+    }
+
+    fn enter_meld(s: &mut State, tiles: &str) {
+        s.mode = Mode::MeldEntry;
+        for x in tiles.split_whitespace() {
+            s.key(t(x)).unwrap();
+        }
+        s.lay_meld().unwrap();
+        s.mode = Mode::Idle;
+    }
+
+    #[test]
+    fn setup_and_flow() {
+        let mut s = started();
+        assert_eq!(s.deck_count, 20);
+        assert!(!s.keyboard_visible(), "my own turn needs no keyboard");
+        assert!(s.view().is_some_and(|v| v.phase == Phase::AfterDraw));
+        s.discard(0, t("Si13")).unwrap();
+        assert_eq!(s.turn, 1);
+        assert!(!s.keyboard_visible(), "an opponent must draw before discarding");
+        s.opp_draw().unwrap();
+        assert!(s.keyboard_visible());
+        s.key(t("K7")).unwrap();
+        s.opp_draw().unwrap();
+        s.key(t("M7")).unwrap();
+        s.take_side().unwrap();
+        assert_eq!(s.players[3].known, vec![t("M7")]);
+        s.key(t("Si8")).unwrap();
+        assert_eq!(s.players[3].known, vec![t("M7")], "a taken tile stays known until it is shown");
+        assert!(s.view().is_some_and(|v| v.phase == Phase::BeforeDraw));
+        assert!(!s.can_take(), "Si8 fits no meld of mine, so it cannot be used to open");
+        s.apply(Decision::Draw).unwrap();
+        assert_eq!(s.mode, Mode::PickDraw);
+        s.key(t("K6")).unwrap();
+        assert!(s.view().is_some_and(|v| v.phase == Phase::AfterDraw));
+    }
+
+    #[test]
+    fn usable_side_tile_can_be_taken() {
+        let mut s = started();
+        s.discard(0, t("Si13")).unwrap();
+        for d in ["K7", "M7", "K9"] {
+            s.opp_draw().unwrap();
+            s.key(t(d)).unwrap();
+        }
+        assert!(s.can_take(), "K9 makes a group of nines and still opens with 105");
+    }
+
+    #[test]
+    fn opponent_lays_then_layoff_options() {
+        let mut s = started();
+        s.discard(0, t("Si13")).unwrap();
+        s.opp_draw().unwrap();
+        assert!(s.lay_options(0).is_empty());
+        enter_meld(&mut s, "M6 M7 M8");
+        enter_meld(&mut s, "K9 K10 K11");
+        enter_meld(&mut s, "S9 S10 S11 S12 S13");
+        assert_eq!(s.players[1].opened, Opened::Melds);
+        assert_eq!(s.players[1].open_value, 106);
+        assert_eq!(s.players[1].hand_len, Some(11));
+        assert!(s.meld_tappable(0));
+        let opts = s.lay_options(0);
+        assert!(opts.iter().any(|o| o.tile == t("M5") && o.side == Side::Low));
+        assert!(
+            opts.iter()
+                .any(|o| o.tile == JOKER && o.side == Side::High && o.stands_for == t("M9"))
+        );
+        let okey_low = *opts.iter().find(|o| o.tile == JOKER && o.side == Side::Low).unwrap();
+        s.lay_option(0, okey_low).unwrap();
+        assert_eq!(
+            s.table.melds[0].shape,
+            Shape::Run {
+                color: 2,
+                lo: 5,
+                hi: 8,
+                jokers: 1 << 5
+            }
+        );
+        assert_eq!(s.players[1].hand_len, Some(10));
+        assert_eq!(s.swap_options(0).len(), 1, "whoever holds M5 could now take the okey back");
+    }
+
+    #[test]
+    fn nothing_touches_the_table_until_the_opening_reaches_101() {
+        let mut s = started();
+        s.discard(0, t("Si13")).unwrap();
+        s.opp_draw().unwrap();
+        enter_meld(&mut s, "M6 M7 M8");
+        assert!(!s.opening_complete(), "21 points is not an opening");
+        assert_eq!(s.opening_progress().as_deref(), Some("Açılış: 21 / 101 puan"));
+        assert!(s.lay_options(0).is_empty(), "no lay-off before 101 is down");
+        assert!(s.swap_options(0).is_empty());
+        assert!(!s.meld_tappable(0));
+        assert!(s.discard(1, t("K7")).is_err(), "the turn cannot end on a half opening");
+        enter_meld(&mut s, "K9 K10 K11");
+        enter_meld(&mut s, "S9 S10 S11 S12 S13");
+        assert!(s.opening_complete(), "21 + 30 + 55 = 106");
+        assert!(!s.lay_options(0).is_empty());
+        s.discard(1, t("K7")).unwrap();
+    }
+
+    #[test]
+    fn my_own_half_opening_stops_the_analysis() {
+        let mut s = started();
+        s.mode = Mode::Manual;
+        s.buffer = vec![t("K1"), t("K2"), t("K3")];
+        s.lay_meld().unwrap();
+        assert!(!s.opening_complete());
+        assert!(s.view().is_none(), "no advice may be computed from an illegal half-opened position");
+        assert!(s.discard(0, t("S9")).is_err());
+    }
+
+    #[test]
+    fn katlamali_opening_must_beat_the_previous_one() {
+        let mut s = started();
+        s.rules.katlamali = true;
+        s.discard(0, t("Si13")).unwrap();
+        s.opp_draw().unwrap();
+        enter_meld(&mut s, "K9 K10 K11");
+        enter_meld(&mut s, "S9 S10 S11 S12 S13");
+        enter_meld(&mut s, "M6 M7 M8");
+        assert_eq!(s.players[1].open_value, 106);
+        s.discard(1, t("K7")).unwrap();
+        s.opp_draw().unwrap();
+        assert_eq!(s.opening_need(), (107, 5), "the next opener needs more than 106");
+    }
+
+    #[test]
+    fn disabled_keys_follow_what_is_possible() {
+        let mut s = started();
+        assert!(!s.key_enabled(t("K1")), "no keyboard input on my own action turn");
+        s.discard(0, t("Si13")).unwrap();
+        s.opp_draw().unwrap();
+        assert!(s.key_enabled(t("K7")));
+        assert!(!s.key_enabled(t("S1")), "both S1 are in my hand");
+    }
+
+    #[test]
+    fn apply_decision_discards() {
+        let mut s = started();
+        let v = s.view().unwrap();
+        let mut a = okey_engine::analysis::Analyzer::new(v, 1).unwrap();
+        a.step(20);
+        let best = a.report().candidates[0].clone();
+        s.apply_move(&best.mv.expect("the leading move carries its steps")).unwrap();
+        assert!(s.turn == 1 || s.stage == Stage::Over);
+        assert_eq!(
+            s.hand.len(),
+            21 - s.table.melds.iter().map(|m| m.shape.len() as usize).sum::<usize>()
+        );
+    }
+}
