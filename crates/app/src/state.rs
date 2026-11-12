@@ -447,6 +447,10 @@ impl State {
             let pv = &mut self.players[p as usize];
             remove_one(&mut pv.known, t);
             pv.hand_len = Some(pv.hand_len.unwrap_or(22).saturating_sub(1));
+            if pv.hand_len == Some(0) {
+                self.finish(p, Some(t));
+                return Ok(());
+            }
         }
         self.penalties[p as usize] += pen;
         self.players[p as usize].discards.push(t);
@@ -1080,6 +1084,23 @@ mod tests {
         s.opp_draw().unwrap();
         s.discard(2, t("K2")).unwrap();
         assert_eq!(s.penalties, [0, 101, 0, 0]);
+    }
+
+    #[test]
+    fn an_opponent_finishes_by_discarding_the_last_tile() {
+        let mut s = started();
+        s.discard(0, t("Si13")).unwrap();
+        s.opp_draw().unwrap();
+        enter_meld(&mut s, "M6 M7 M8");
+        enter_meld(&mut s, "K9 K10 K11");
+        enter_meld(&mut s, "S9 S10 S11 S12 S13");
+        assert!(
+            s.lay_options(2).is_empty(),
+            "a run of five laid this turn takes nothing more this turn"
+        );
+        s.players[1].hand_len = Some(1);
+        s.key(t("K7")).unwrap();
+        assert_eq!((s.stage, s.finisher), (Stage::Over, Some(1)));
     }
 
     #[test]

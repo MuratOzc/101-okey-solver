@@ -1017,6 +1017,7 @@ fn opp_act(ctx: Ctx, s: &State) -> impl IntoView + use<> {
         view! { <div class="good">{format!("Bu tur açtı: {what}")}</div> }
     });
     let can_tap = s.can_lay_off() && (0..s.table.melds.len()).any(|i| s.meld_tappable(i));
+    let elden = pv.opened == Opened::No && !s.opened_this_turn;
     let short = (!s.opening_complete()).then(|| {
         view! {
             <div class="warn">{s.opening_progress()} " · açılış eksik. Kalan perleri gir; yanlışsa geri al."</div>
@@ -1030,8 +1031,11 @@ fn opp_act(ctx: Ctx, s: &State) -> impl IntoView + use<> {
         {short}
         <div class="choices">
             <button class="btn light" on:click=move |_| ctx.mode(Mode::MeldEntry)>"Per / çift indirdi"</button>
-            <button class="btn light danger" on:click=move |_| ctx.act(|s| { let p = s.turn; s.finish(p, None); Ok(()) })>"Bitirdi"</button>
+            {elden.then(|| view! {
+                <button class="btn light danger" on:click=move |_| ctx.act(|s| { let p = s.turn; s.finish(p, None); s.fin_elden = true; Ok(()) })>"Elden bitti"</button>
+            })}
         </div>
+        {(!elden).then(|| view! { <p class="muted">"Bitirdiyse: indirdiği ve işlediği taşları gir; son taşını atınca el kendiliğinden biter."</p> })}
         {can_tap.then(|| view! { <p class="muted">"İşlediyse ya da okey aldıysa masada o pere dokun (sarı çerçeveli)."</p> })}
     }
 }
