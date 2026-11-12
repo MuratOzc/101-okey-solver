@@ -359,7 +359,7 @@ impl Default for Options {
     fn default() -> Self {
         Options {
             rich_moves: true,
-            policy: Policy::TUNED,
+            policy: Policy::FINISHER,
             max_discards: 12,
             infer: true,
             exhaustive: true,

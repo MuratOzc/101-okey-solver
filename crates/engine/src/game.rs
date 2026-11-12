@@ -766,6 +766,11 @@ impl Game {
             }
         }
         let next_unopened = self.players[((p + 1) % 4) as usize].opened == Opened::No;
+        let pair_hope = pol.w_pair_keep > 0.0
+            && !pairs_mode
+            && self.rules.pairs_enabled
+            && self.rules.pairs_onto_pair_opener
+            && (!self.table.pair_owners().is_empty() || self.players.iter().any(|q| q.opened == Opened::No));
         let mut frees_okey = [false; NIDS];
         if self.rules.joker_retrieve {
             for slot in self.table.joker_slots(&self.rules) {
@@ -823,6 +828,9 @@ impl Game {
             }
             if frees_okey[t as usize] {
                 keep += 2000.0;
+            }
+            if pair_hope && hand[t as usize] >= 2 {
+                keep += pol.w_pair_keep;
             }
             out.push((t, (keep * 10.0) as i32 + self.discard_penalty(p, t) * 1000));
         }

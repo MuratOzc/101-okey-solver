@@ -120,7 +120,7 @@ Maç yakınken yaklaşık 5 puan kazandırıyor. Çok öndeyken ya da çok gerid
 - Eşli ağ, eşin ayarlı bot gibi oynadığı oyunlardan öğrendi.
 - Model katlamalı ya da değiştirilmiş kurallarda ve maç durumu açıkken devreye girmez; o zaman senin sonraki turlarını da bot oynar.
 - Model açıkken saniyede yaklaşık 16 kat daha az senaryo denenir.
-- Rakip modeli basit: blöfü ve masadaki oyuncunun tarzını bilmez.
+- Simülasyonda rakipler bitmeye oynayan botlardır: açabildikleri an açarlar, çiftlerini çift açana işlemek için saklarlar. Blöfü ve masadaki oyuncunun kişisel tarzını bilmezler.
 - 20 000'den fazla yasal hamlesi olan ellerde tam liste yerine hazır planlar karşılaştırılır.
 
 ## Proje yapısı

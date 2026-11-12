@@ -37,6 +37,15 @@ fn player(spec: &str, nets: &[(String, Arc<Net>)], seed: u64) -> Box<dyn Agent> 
             iterations: n.parse().expect("iterations"),
             seed,
         }),
+        Some(("searchf", n)) => Box::new(SearchAgent {
+            label: spec.into(),
+            opts: Options {
+                policy: Policy::FINISHER,
+                ..Options::default()
+            },
+            iterations: n.parse().expect("iterations"),
+            seed,
+        }),
         Some(("plans", n)) => Box::new(SearchAgent {
             label: spec.into(),
             opts: Options {
@@ -138,6 +147,7 @@ fn main() {
                         let rivals: Vec<Policy> = (0..3)
                             .map(|k| match versus.as_str() {
                                 "basic" => Policy::BASIC,
+                                "finisher" => Policy::FINISHER,
                                 "mixed" if (i as usize + k).is_multiple_of(2) => Policy::BASIC,
                                 _ => Policy::TUNED,
                             })

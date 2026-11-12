@@ -50,6 +50,8 @@ pub struct Policy {
     pub lay_after_open: bool,
     /// After opening, may an okey be laid in a run, where an opponent holding that tile takes it?
     pub joker_in_runs: bool,
+    /// Discard: keep pairs in hand to lay onto someone's pairs later.
+    pub w_pair_keep: f32,
 }
 
 impl Default for Policy {
@@ -75,6 +77,17 @@ impl Policy {
         open_style: OpenStyle::SafeOkey,
         lay_after_open: true,
         joker_in_runs: true,
+        w_pair_keep: 0.0,
+    };
+
+    /// How people at the table actually play: for the finish, not for points. Opens as soon as it
+    /// can, with as few tiles left as possible, and keeps pairs for whoever opens with pairs.
+    pub const FINISHER: Policy = Policy {
+        hold_deck_quiet: 99,
+        hold_deck_active: 99,
+        open_style: OpenStyle::MaxCover,
+        w_pair_keep: 60.0,
+        ..Policy::TUNED
     };
 
     pub fn varied(rng: &mut crate::rng::Rng) -> Policy {
@@ -118,5 +131,6 @@ impl Policy {
         open_style: OpenStyle::MaxValue,
         lay_after_open: true,
         joker_in_runs: true,
+        w_pair_keep: 0.0,
     };
 }
