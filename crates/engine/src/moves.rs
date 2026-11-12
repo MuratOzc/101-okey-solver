@@ -189,6 +189,9 @@ impl Game {
             }
         }
         let short_opening = self.players[pi].opened == Opened::No && laid && !self.settle_opening(p, value, pairs);
+        if start == Opened::No && self.players[pi].opened == Opened::Pairs {
+            self.charge_big_pairs(p, pairs);
+        }
         if !used_taken && r.take_must_use {
             return Err(());
         }

@@ -1024,3 +1024,26 @@ fn the_analysis_tells_who_draws_the_last_tile() {
         draw.p_last_draw
     );
 }
+
+#[test]
+fn opening_with_seven_pairs_writes_minus_101_to_the_opener() {
+    use okey_engine::moves::Act;
+    let pairs = |n: usize| -> Vec<Act> {
+        ["K1", "K3", "K5", "S2", "S4", "M6", "M8"][..n]
+            .iter()
+            .map(|x| Act::Meld(Shape::Pair { tile: t(x), joker: false }))
+            .collect()
+    };
+    let hand0 = "K1 K1 K3 K3 K5 K5 S2 S2 S4 S4 M6 M6 M8 M8 Si11 Si12 Si13 K9 K10 S11 S12 M13";
+    let others = "K2 K4 K6 K7 K8 K9 K11 K12 K13 S1 S3 S5 S6 S8 S9 S10 S13 M1 M2 M3 M4";
+    for (partners, n, want) in [(true, 7, [-101, 0, 0, 0]), (true, 6, [0, 0, 0, 0]), (false, 7, [-101, 0, 0, 0])] {
+        let rules = Rules {
+            partners,
+            ..Rules::default()
+        };
+        let mut g = game_with(rules, [hand0, others, others, others]);
+        g.play_acts(0, &pairs(n), None).unwrap();
+        assert_eq!(g.players[0].opened, Opened::Pairs);
+        assert_eq!(g.players.map(|p| p.penalty), want, "partners {partners}, {n} pairs");
+    }
+}

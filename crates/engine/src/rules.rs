@@ -58,6 +58,9 @@ pub struct Rules {
     pub penalty_islek: i32,
     pub islek_applies_unopened: bool,
     pub penalty_discard_joker: i32,
+
+    pub big_pairs_penalty: i32,
+    pub big_pairs_min: u8,
 }
 
 impl Default for Rules {
@@ -104,6 +107,8 @@ impl Default for Rules {
             penalty_islek: 101,
             islek_applies_unopened: true,
             penalty_discard_joker: 101,
+            big_pairs_penalty: 101,
+            big_pairs_min: 7,
         }
     }
 }

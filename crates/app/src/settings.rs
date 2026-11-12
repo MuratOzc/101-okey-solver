@@ -107,6 +107,8 @@ fn nums() -> Vec<(&'static str, Vec<(&'static str, GetN, SetN)>)> {
                 n!("İşlek taş atma", penalty_islek),
                 n!("Okey atma", penalty_discard_joker),
                 n!("Okeyini rakibe kaptırma", okey_lost_penalty),
+                n!("Çok çiftle açana eksi yazılır (0 = yok)", big_pairs_penalty),
+                n!("Bunun için en az çift", big_pairs_min),
                 n!("Yandan alma çarpanı", take_penalty_mult),
             ],
         ),

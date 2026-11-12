@@ -263,6 +263,14 @@ impl Game {
         true
     }
 
+    pub(crate) fn charge_big_pairs(&mut self, p: u8, pairs: u8) {
+        let r = &self.rules;
+        if r.big_pairs_penalty == 0 || pairs < r.big_pairs_min {
+            return;
+        }
+        self.players[p as usize].penalty -= r.big_pairs_penalty;
+    }
+
     fn charge_take(&mut self, p: u8, t: Tile) {
         let r = &self.rules;
         if !r.take_penalty_enabled {
@@ -389,6 +397,7 @@ impl Game {
         let n = pairs.len() as u8;
         self.put_melds(p, &pairs, true);
         self.players[p as usize].opened = Opened::Pairs;
+        self.charge_big_pairs(p, n);
         if self.rules.katlamali {
             self.pair_req = self.pair_req.max(n + self.rules.raise_pair_by);
         }
