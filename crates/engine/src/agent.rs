@@ -5,9 +5,11 @@ use crate::analysis::{Analyzer, Decision, Options, Phase, public_view};
 use crate::game::{Game, Outcome};
 use crate::meld::Solver;
 use crate::moves::Move;
+use crate::net::Net;
 use crate::policy::Policy;
 use crate::stakes::erf;
-use crate::tile::Tile;
+use crate::tile::{Tile, tiles_of};
+use std::sync::Arc;
 
 pub trait Agent {
     fn name(&self) -> String;
@@ -64,6 +66,35 @@ impl Agent for SearchAgent {
     }
 }
 
+pub struct HelpedAgent {
+    pub label: String,
+    pub opts: Options,
+    pub iterations: usize,
+    pub seed: u64,
+    pub help: Help,
+}
+
+impl Agent for HelpedAgent {
+    fn name(&self) -> String {
+        self.label.clone()
+    }
+
+    fn turn(&mut self, g: &mut Game, sv: &mut Solver, first: bool) -> Option<Outcome> {
+        let seat = g.current;
+        let mut mine = g.rotated(seat);
+        self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let out = search_turn_with(&mut mine, sv, first, self.iterations, self.seed, &self.opts, &self.help);
+        *g = mine.rotated((4 - seat) % 4);
+        out.map(|o| match o {
+            Outcome::Finished(mut f) => {
+                f.player = (f.player + seat) % 4;
+                Outcome::Finished(f)
+            }
+            other => other,
+        })
+    }
+}
+
 /// Not a legal player: it sees every hand and the order of the deck, and tries each of its plans
 /// against that truth. Its rating is the ceiling the luck of the deal leaves room for.
 pub struct OracleAgent {
@@ -109,10 +140,27 @@ impl Agent for OracleAgent {
     }
 }
 
-fn decide(g: &Game, phase: Phase, taken: Option<Tile>, iterations: usize, seed: u64, opts: &Options) -> (Option<Decision>, Option<Move>) {
-    let Ok(mut a) = Analyzer::with_options(public_view(g, phase, taken), seed, *opts) else {
+fn decide(
+    g: &Game,
+    phase: Phase,
+    taken: Option<Tile>,
+    iterations: usize,
+    seed: u64,
+    opts: &Options,
+    help: &Help,
+) -> (Option<Decision>, Option<Move>) {
+    let mut view = public_view(g, phase, taken);
+    if help.peek {
+        for p in 1..4 {
+            view.players[p].known = tiles_of(&g.players[p].hand);
+        }
+    }
+    let Ok(mut a) = Analyzer::with_options(view, seed, *opts) else {
         return (None, None);
     };
+    if let Some((net, weight, own_turns)) = &help.model {
+        a.use_model(net.clone(), *weight, *own_turns);
+    }
     let mut done = 0;
     loop {
         a.step(25);
@@ -129,11 +177,31 @@ fn decide(g: &Game, phase: Phase, taken: Option<Tile>, iterations: usize, seed: 
 
 /// One whole turn for seat 0 of `g`, chosen by search. Falls back to the bot if the search has no answer.
 pub fn search_turn(g: &mut Game, sv: &mut Solver, first: bool, iterations: usize, seed: u64, opts: &Options) -> Option<Outcome> {
+    search_turn_with(g, sv, first, iterations, seed, opts, &Help::default())
+}
+
+#[derive(Clone, Default)]
+pub struct Help {
+    /// Told every opponent's hand, though not the order of the deck. Not a legal player.
+    pub peek: bool,
+    /// (network, how many simulated deals its opinion of a move counts for, whether it plays my later turns)
+    pub model: Option<(Arc<Net>, f64, bool)>,
+}
+
+pub fn search_turn_with(
+    g: &mut Game,
+    sv: &mut Solver,
+    first: bool,
+    iterations: usize,
+    seed: u64,
+    opts: &Options,
+    help: &Help,
+) -> Option<Outcome> {
     g.policy[0] = opts.policy;
     g.table.new_turn();
     let mut taken = None;
     if !first {
-        match decide(g, Phase::BeforeDraw, None, iterations, seed, opts).0 {
+        match decide(g, Phase::BeforeDraw, None, iterations, seed, opts, help).0 {
             Some(Decision::Take) => taken = Some(g.take_top(0)),
             _ => match g.deck.pop() {
                 Some(t) => g.players[0].hand[t as usize] += 1,
@@ -141,7 +209,7 @@ pub fn search_turn(g: &mut Game, sv: &mut Solver, first: bool, iterations: usize
             },
         }
     }
-    let (picked, mv) = decide(g, Phase::AfterDraw, taken, iterations, seed ^ 0x55, opts);
+    let (picked, mv) = decide(g, Phase::AfterDraw, taken, iterations, seed ^ 0x55, opts, help);
     let backup = g.clone();
     let res = match (picked, mv) {
         (Some(Decision::Play(_)), Some(mv)) => g.play_move(0, &mv, taken),

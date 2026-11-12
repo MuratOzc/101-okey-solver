@@ -1,6 +1,9 @@
+use crate::features::{Moment, encode};
 use crate::game::*;
 use crate::meld::{Shape, Solver};
+use crate::model::{model_act, play_out_with, written3};
 use crate::moves::{Act, Move, generate};
+use crate::net::Net;
 use crate::pairs::pair_plan;
 use crate::policy::{LayStyle, OpenStyle, Policy};
 use crate::rng::Rng;
@@ -9,6 +12,7 @@ use crate::stakes::Stakes;
 use crate::table::{Table, TableMeld};
 use crate::tile::*;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -173,6 +177,12 @@ impl View {
             Phase::BeforeDraw => self.left_top(),
             Phase::AfterDraw => None,
         };
+        let mut piles = [[0u8; NIDS]; 4];
+        let mut last = [None; 4];
+        for (p, pv) in self.players.iter().enumerate().take(4) {
+            pv.discards.iter().for_each(|&t| piles[p][t as usize] += 1);
+            last[p] = pv.discards.last().copied();
+        }
         Game {
             rules: self.rules.clone(),
             gosterge: self.gosterge,
@@ -187,6 +197,8 @@ impl View {
             meld_req,
             pair_req,
             seen,
+            piles,
+            last,
             log: None,
             policy: [Policy::default(); 4],
             stakes: self.stakes,
@@ -245,6 +257,7 @@ pub struct Report {
     pub truncated: bool,
     /// The remaining candidates are being compared with look-ahead simulations.
     pub deep: bool,
+    pub model: bool,
 }
 
 struct Cand {
@@ -261,6 +274,8 @@ struct Cand {
     deckout: u32,
     next_takes: u32,
     alive: bool,
+    prior: Option<f32>,
+    rated: bool,
 }
 
 pub struct Analyzer {
@@ -277,6 +292,9 @@ pub struct Analyzer {
     truncated: bool,
     /// How many of my later turns each simulation searches (0 = the bot plays them).
     depth: u8,
+    net: Option<Arc<Net>>,
+    prior_weight: f64,
+    own_turns: bool,
 }
 
 /// Look-ahead costs roughly ten plain simulations each, so it starts only when this few candidates are left.
@@ -306,6 +324,8 @@ fn blank(decision: Decision, mv: Option<Move>) -> Cand {
         deckout: 0,
         next_takes: 0,
         alive: true,
+        prior: None,
+        rated: false,
     }
 }
 
@@ -462,6 +482,9 @@ impl Analyzer {
             next_cut: FIRST_CUT,
             truncated: false,
             depth: 0,
+            net: None,
+            prior_weight: 0.0,
+            own_turns: false,
         };
         // Playing for the match, what decides is finish-or-wait and which tile to give up, including
         // tiles that cost a penalty; a winning line may come up on one deal in fifty, so the field has to
@@ -489,6 +512,56 @@ impl Analyzer {
             return Err("Geçerli hamle bulunamadı".into());
         }
         Ok(me)
+    }
+
+    /// The network's opinion of a candidate counts like `weight` simulated deals; with `own_turns`
+    /// it also plays my later turns inside every simulation.
+    pub fn use_model(&mut self, net: Arc<Net>, weight: f64, own_turns: bool) {
+        // A network knows only the plain score gap under the default rules, alone or in teams as it was trained.
+        let trained = Rules {
+            partners: net.partners,
+            ..Rules::default()
+        };
+        if self.view.stakes.is_some() || self.view.rules != trained {
+            return;
+        }
+        self.net = Some(net);
+        self.prior_weight = weight;
+        self.own_turns = own_turns;
+        self.rate();
+    }
+
+    fn rate(&mut self) {
+        let Some(net) = self.net.clone() else { return };
+        if self.prior_weight <= 0.0 || self.cands.iter().all(|c| c.rated) {
+            return;
+        }
+        let mut base = self.view.determinize(&mut Rng::new(1));
+        base.policy = [self.opts.policy; 4];
+        let taken = self.view.taken;
+        for c in self.cands.iter_mut().filter(|c| !c.rated) {
+            c.rated = true;
+            let mut g = base.clone();
+            let sv = &mut self.sv;
+            c.prior = match (&c.mv, c.decision) {
+                (Some(mv), _) => g.play_move(0, mv, taken).ok().map(|end| settle(&mut g, sv, &net, end)),
+                (None, Decision::Draw) => Some(written3(&g, 0) as f32 + net.value(&encode(&g, sv, 0, Moment::Draw, net.full()))),
+                (None, Decision::Take) if g.top.is_some() => {
+                    let t = g.take_top(0);
+                    Some(written3(&g, 0) as f32 + net.value(&encode(&g, sv, 0, Moment::Take(t), net.full())))
+                }
+                (None, Decision::Act { choice, discard }) => g.apply_choice(sv, 0, choice, taken).ok().map(|end| {
+                    if end.is_none() {
+                        let t = discard
+                            .filter(|&t| g.players[0].hand[t as usize] > 0)
+                            .unwrap_or_else(|| g.bot_discard(sv, 0));
+                        g.discard(0, t);
+                    }
+                    settle(&mut g, sv, &net, end)
+                }),
+                _ => None,
+            };
+        }
     }
 
     /// List every legal position; start by screening them with one sensible discard each.
@@ -543,6 +616,7 @@ impl Analyzer {
             .map(|(i, t)| self.candidate(i, t))
             .collect();
         self.screening = false;
+        self.rate();
     }
 
     /// One more deal, played out for every live candidate.
@@ -551,10 +625,11 @@ impl Analyzer {
         self.iter += 1;
         // Every candidate faces the same deal, so the deal (and the inference behind it) is made once.
         let deal = self.view.sample(&mut Rng::new(seed), &mut self.sv, &self.opts);
+        let ai = self.net.clone().filter(|_| self.own_turns);
         for c in self.cands.iter_mut().filter(|c| c.alive) {
             let r = match &c.mv {
-                Some(mv) => play_move_on(&self.view, deal.clone(), &mut self.sv, mv, self.depth),
-                None => play_decision_on(&self.view, deal.clone(), &mut self.sv, c.decision, self.depth),
+                Some(mv) => play_move_on(&self.view, deal.clone(), &mut self.sv, mv, self.depth, ai.as_deref()),
+                None => play_decision_on(&self.view, deal.clone(), &mut self.sv, c.decision, self.depth, ai.as_deref()),
             };
             c.scores.push(r.gap);
             c.tie += r.tie as i64;
@@ -569,6 +644,7 @@ impl Analyzer {
     }
 
     pub fn step(&mut self, iterations: usize) {
+        self.rate();
         for _ in 0..iterations {
             self.sample_once();
             if self.screening {
@@ -613,7 +689,8 @@ impl Analyzer {
         self.next_cut *= 2;
         let field = self.cands.len();
         let keep = (if field > 500 { field / 3 } else { field / 2 }).max(SCREEN_KEEP);
-        self.cands.sort_by(merit);
+        let w = self.prior_weight;
+        self.cands.sort_by(|a, b| merit(a, b, w));
         self.cands.truncate(keep);
         if keep <= SCREEN_KEEP {
             let survivors: Vec<usize> = self
@@ -631,7 +708,7 @@ impl Analyzer {
     fn best_alive(&self) -> Option<usize> {
         (0..self.cands.len())
             .filter(|&i| self.cands[i].alive)
-            .min_by(|&a, &b| merit(&self.cands[a], &self.cands[b]))
+            .min_by(|&a, &b| merit(&self.cands[a], &self.cands[b], self.prior_weight))
     }
 
     fn prune(&mut self) {
@@ -644,11 +721,20 @@ impl Analyzer {
             return;
         }
         let best = self.cands[b].scores.clone();
+        let (best_prior, w) = (self.cands[b].prior, self.prior_weight);
         for (i, c) in self.cands.iter_mut().enumerate() {
             if i == b || !c.alive {
                 continue;
             }
-            let (d, se) = paired(&c.scores, &best);
+            let (mut d, mut se) = paired(&c.scores, &best);
+            if let (Some(p), Some(q)) = (c.prior, best_prior)
+                && w > 0.0
+                && se.is_finite()
+            {
+                let n = c.scores.len().min(best.len()) as f64;
+                d = (n * d + w * (p - q) as f64) / (n + w);
+                se *= (n / (n + w)).sqrt();
+            }
             if d > 3.5 * se + GAP_SCALE {
                 c.alive = false;
             }
@@ -661,7 +747,7 @@ impl Analyzer {
         let mut order: Vec<usize> = (0..self.cands.len()).collect();
         order.sort_by(|&a, &b| {
             let (x, y) = (&self.cands[a], &self.cands[b]);
-            y.alive.cmp(&x.alive).then(merit(x, y))
+            y.alive.cmp(&x.alive).then(merit(x, y, self.prior_weight))
         });
         let cands = order
             .into_iter()
@@ -676,7 +762,7 @@ impl Analyzer {
                         Some(mv) => move_label(mv, &self.view.rules),
                         None => label(&c.decision),
                     },
-                    mean: mean(&c.scores) / GAP_SCALE,
+                    mean: est(c, self.prior_weight) / GAP_SCALE,
                     own: c.own as f64 / n,
                     diff_se: paired(&c.scores, &best_scores).1 / GAP_SCALE,
                     n: c.scores.len(),
@@ -698,6 +784,7 @@ impl Analyzer {
             screening: self.screening,
             truncated: self.truncated,
             deep: self.depth > 0,
+            model: self.net.is_some() && self.own_turns,
         }
     }
 }
@@ -751,9 +838,26 @@ pub fn move_label(mv: &Move, rules: &Rules) -> String {
 }
 
 /// Candidates in order of merit: mean cost first, mean score gap between equals.
-fn merit(a: &Cand, b: &Cand) -> std::cmp::Ordering {
+fn merit(a: &Cand, b: &Cand, weight: f64) -> std::cmp::Ordering {
     let tie = |c: &Cand| c.tie as f64 / c.scores.len().max(1) as f64;
-    mean(&a.scores).total_cmp(&mean(&b.scores)).then(tie(a).total_cmp(&tie(b)))
+    est(a, weight).total_cmp(&est(b, weight)).then(tie(a).total_cmp(&tie(b)))
+}
+
+fn est(c: &Cand, weight: f64) -> f64 {
+    match c.prior {
+        Some(p) if weight > 0.0 => (c.scores.iter().map(|&x| x as f64).sum::<f64>() + weight * p as f64) / (c.scores.len() as f64 + weight),
+        _ => mean(&c.scores),
+    }
+}
+
+fn settle(g: &mut Game, sv: &mut Solver, net: &Net, end: Option<Outcome>) -> f32 {
+    match end {
+        Some(end) => g.gap3(&g.scores(&end), 0) as f32,
+        None => {
+            g.current = 1;
+            written3(g, 0) as f32 + net.value(&encode(g, sv, 0, Moment::After, net.full()))
+        }
+    }
 }
 
 fn mean(v: &[i32]) -> f64 {
@@ -796,20 +900,20 @@ pub struct RolloutResult {
 
 pub fn rollout(view: &View, sv: &mut Solver, d: Decision, seed: u64, opts: &Options, depth: u8) -> RolloutResult {
     let g = view.sample(&mut Rng::new(seed), sv, opts);
-    play_decision_on(view, g, sv, d, depth)
+    play_decision_on(view, g, sv, d, depth, None)
 }
 
-fn play_decision_on(view: &View, mut g: Game, sv: &mut Solver, d: Decision, depth: u8) -> RolloutResult {
+fn play_decision_on(view: &View, mut g: Game, sv: &mut Solver, d: Decision, depth: u8, ai: Option<&Net>) -> RolloutResult {
     let mut out = None;
     let mut rest = depth;
     match d {
         Decision::Draw => match g.deck.pop() {
             Some(t) => {
                 g.players[0].hand[t as usize] += 1;
-                out = if depth > 0 {
-                    g.lookahead_act(sv, 0, None, depth - 1)
-                } else {
-                    g.bot_act(sv, 0, None)
+                out = match ai {
+                    Some(net) => model_act(&mut g, sv, net, None),
+                    None if depth > 0 => g.lookahead_act(sv, 0, None, depth - 1),
+                    None => g.bot_act(sv, 0, None),
                 };
                 rest = depth.saturating_sub(1);
             }
@@ -817,10 +921,10 @@ fn play_decision_on(view: &View, mut g: Game, sv: &mut Solver, d: Decision, dept
         },
         Decision::Take => {
             let t = g.take_top(0);
-            out = if depth > 0 {
-                g.lookahead_act(sv, 0, Some(t), depth - 1)
-            } else {
-                g.bot_act(sv, 0, Some(t))
+            out = match ai {
+                Some(net) => model_act(&mut g, sv, net, Some(t)),
+                None if depth > 0 => g.lookahead_act(sv, 0, Some(t), depth - 1),
+                None => g.bot_act(sv, 0, Some(t)),
             };
             rest = depth.saturating_sub(1);
         }
@@ -845,16 +949,16 @@ fn play_decision_on(view: &View, mut g: Game, sv: &mut Solver, d: Decision, dept
             }
         },
     }
-    conclude(view, g, out, sv, rest)
+    conclude(view, g, out, sv, rest, ai)
 }
 
 /// One simulated hand after seat 0 plays an explicit move.
 pub fn rollout_move(view: &View, sv: &mut Solver, mv: &Move, seed: u64, opts: &Options, depth: u8) -> RolloutResult {
     let g = view.sample(&mut Rng::new(seed), sv, opts);
-    play_move_on(view, g, sv, mv, depth)
+    play_move_on(view, g, sv, mv, depth, None)
 }
 
-fn play_move_on(view: &View, mut g: Game, sv: &mut Solver, mv: &Move, depth: u8) -> RolloutResult {
+fn play_move_on(view: &View, mut g: Game, sv: &mut Solver, mv: &Move, depth: u8, ai: Option<&Net>) -> RolloutResult {
     let out = match g.play_move(0, mv, view.taken) {
         Ok(o) => o,
         Err(()) => {
@@ -863,18 +967,20 @@ fn play_move_on(view: &View, mut g: Game, sv: &mut Solver, mv: &Move, depth: u8)
             None
         }
     };
-    conclude(view, g, out, sv, depth)
+    conclude(view, g, out, sv, depth, ai)
 }
 
 /// Play the hand out from just after seat 0's turn, and score it.
-fn conclude(view: &View, mut g: Game, out: Option<Outcome>, sv: &mut Solver, depth: u8) -> RolloutResult {
+fn conclude(view: &View, mut g: Game, out: Option<Outcome>, sv: &mut Solver, depth: u8, ai: Option<&Net>) -> RolloutResult {
     let mut next_takes = false;
     let o = match out {
         Some(o) => o,
         None => {
             g.current = 1;
             next_takes = g.bot_wants_take(sv, 1);
-            if depth > 0 {
+            if let Some(net) = ai {
+                play_out_with(&mut g, sv, net, [true, false, false, false])
+            } else if depth > 0 {
                 g.play_out_lookahead(sv, 0, depth)
             } else {
                 g.play_out(sv)
@@ -1129,5 +1235,6 @@ pub fn merge_reports(reports: &[Report]) -> Report {
         screening: reports.iter().all(|r| r.screening),
         truncated: reports.iter().any(|r| r.truncated),
         deep: reports.iter().any(|r| r.deep),
+        model: reports.iter().any(|r| r.model),
     }
 }

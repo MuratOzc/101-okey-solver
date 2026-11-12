@@ -95,6 +95,9 @@ pub struct Game {
     pub meld_req: i32,
     pub pair_req: u8,
     pub seen: Counts,
+    /// Tiles each player has discarded that nobody took.
+    pub piles: [Counts; 4],
+    pub last: [Option<Tile>; 4],
     pub log: Option<Vec<Step>>,
     pub policy: [Policy; 4],
     /// The match situation seat 0 is playing for, when known.
@@ -703,6 +706,8 @@ impl Game {
         pl.penalty += pen;
         pl.hand[t as usize] -= 1;
         self.seen[t as usize] += 1;
+        self.piles[p as usize][t as usize] += 1;
+        self.last[p as usize] = Some(t);
         self.top = Some(t);
         if let Some(log) = &mut self.log {
             log.push(Step::Discard { tile: t, finish: false });
@@ -839,6 +844,9 @@ impl Game {
     pub fn take_top(&mut self, p: u8) -> Tile {
         let t = self.top.take().expect("tile to take");
         self.seen[t as usize] -= 1;
+        let from = ((p + 3) % 4) as usize;
+        self.piles[from][t as usize] = self.piles[from][t as usize].saturating_sub(1);
+        self.last[from] = None;
         self.players[p as usize].hand[t as usize] += 1;
         self.charge_take(p, t);
         t
@@ -967,6 +975,70 @@ impl Game {
                     scores.sort_by_key(|&(_, s)| s);
                     out.extend(scores.into_iter().take(discards).map(|(t, _)| (choice, Some(t))));
                 }
+            }
+        }
+        out
+    }
+
+    /// (best opening total, pairs, tiles left loose after laying everything, their points)
+    pub fn hand_shape(&self, sv: &mut Solver, p: u8) -> (i32, usize, usize, i32) {
+        let pl = &self.players[p as usize];
+        let hand = pl.hand;
+        let (value, pairs, plan) = match pl.opened {
+            Opened::No => {
+                let value = self.open_search(sv, &hand, None).map_or(0, |plan| plan.open_value(&self.rules));
+                let pairs = pair_stats(&hand, &self.rules, self.gosterge_for(p)).0;
+                let cover = Params {
+                    mode: Mode::Penalty,
+                    cover_w: 1000,
+                    must: None,
+                    allow_melds: true,
+                    pair_dump: false,
+                    pair_cap: 0,
+                    joker_runs: true,
+                };
+                (value, pairs, sv.run(&hand, cover, None))
+            }
+            _ => (0, 0, self.lay_search(sv, p, &hand, None)),
+        };
+        match plan {
+            Some(plan) => (
+                value,
+                pairs,
+                plan.rest.len(),
+                plan.rest.iter().map(|&t| penalty_of(t, &self.rules)).sum(),
+            ),
+            None => (value, pairs, total(&hand) as usize, hand_penalty(&hand, &self.rules)),
+        }
+    }
+
+    /// Per tile `p` could draw: (lets `p` open or, once open, go out; gets used at all)
+    pub fn outs(&self, sv: &mut Solver, p: u8) -> [(bool, bool); NIDS] {
+        let pl = &self.players[p as usize];
+        let hand = pl.hand;
+        let mut out = [(false, false); NIDS];
+        let live = |u: usize| self.seen[u] + hand[u] < 2;
+        let joins = |u: usize| u == JOKER as usize || hand[u] > 0 || conn(&hand, u as Tile) > 0;
+        if pl.opened == Opened::No {
+            let value = self.open_search(sv, &hand, None).map_or(0, |plan| plan.open_value(&self.rules));
+            let pairs = pair_stats(&hand, &self.rules, self.gosterge_for(p)).0;
+            for u in (0..NIDS).filter(|&u| live(u) && joins(u)) {
+                let mut h = hand;
+                h[u] += 1;
+                let v = self.open_search(sv, &h, None).map_or(0, |plan| plan.open_value(&self.rules));
+                let n = pair_stats(&h, &self.rules, self.gosterge_for(p)).0;
+                out[u] = (v >= self.meld_req || n >= self.pair_req as usize, v > value || n > pairs);
+            }
+        } else {
+            let attach = self.table.attach(&self.rules);
+            let loose = self
+                .lay_search(sv, p, &hand, None)
+                .map_or(total(&hand) as usize, |plan| plan.rest.len());
+            for u in (0..NIDS).filter(|&u| live(u) && (joins(u) || attach.tile[u])) {
+                let mut h = hand;
+                h[u] += 1;
+                let left = self.lay_search(sv, p, &h, None).map_or(total(&h) as usize, |plan| plan.rest.len());
+                out[u] = (left <= 1, left <= loose);
             }
         }
         out
@@ -1185,6 +1257,8 @@ impl Game {
             meld_req: rules.open_min,
             pair_req: rules.pair_min,
             seen,
+            piles: [[0; NIDS]; 4],
+            last: [None; 4],
             log: None,
             policy: [Policy::default(); 4],
             stakes: None,
@@ -1208,6 +1282,8 @@ impl Game {
         let k = k % 4;
         g.players.rotate_left(k as usize);
         g.policy.rotate_left(k as usize);
+        g.piles.rotate_left(k as usize);
+        g.last.rotate_left(k as usize);
         g.table.pairs_added.rotate_left(k as usize);
         for m in &mut g.table.melds {
             m.owner = (m.owner + 4 - k) % 4;

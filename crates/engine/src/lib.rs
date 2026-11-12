@@ -1,8 +1,11 @@
 pub mod agent;
 pub mod analysis;
+pub mod features;
 pub mod game;
 pub mod meld;
+pub mod model;
 pub mod moves;
+pub mod net;
 pub mod pairs;
 pub mod policy;
 pub mod rng;

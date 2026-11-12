@@ -35,6 +35,8 @@ fn game_with(rules: Rules, hands: [&str; 4]) -> Game {
         meld_req: rules.open_min,
         pair_req: rules.pair_min,
         seen,
+        piles: [[0; NIDS]; 4],
+        last: [None; 4],
         log: None,
         policy: [Default::default(); 4],
         stakes: None,

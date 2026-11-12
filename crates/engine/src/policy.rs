@@ -77,6 +77,32 @@ impl Policy {
         joker_in_runs: true,
     };
 
+    pub fn varied(rng: &mut crate::rng::Rng) -> Policy {
+        let mut pol = if rng.below(3) == 0 { Policy::BASIC } else { Policy::TUNED };
+        let mut jitter = |x: f32| x * (0.6 + 0.8 * (rng.next_u64() >> 40) as f32 / (1u64 << 24) as f32);
+        pol.w_adj = jitter(pol.w_adj);
+        pol.w_gap = jitter(pol.w_gap);
+        pol.w_group = jitter(pol.w_group);
+        pol.w_value_unopened = jitter(pol.w_value_unopened);
+        pol.w_value_opened = jitter(pol.w_value_opened);
+        pol.w_live = [0.0, 0.0165, 0.05][rng.below(3)];
+        pol.w_danger = [0.0, 0.0, 0.5, 1.5][rng.below(4)];
+        if rng.below(2) == 0 {
+            pol.hold_deck_quiet = [99, 99, 30, 20, 14, 10, 8, 5][rng.below(8)];
+            pol.hold_deck_active = pol.hold_deck_quiet + [0, 2, 6][rng.below(3)];
+        }
+        if rng.below(2) == 0 {
+            pol.open_style = [
+                OpenStyle::MaxValue,
+                OpenStyle::MaxCover,
+                OpenStyle::Minimal,
+                OpenStyle::SafeOkey,
+                OpenStyle::NoOkey,
+            ][rng.below(5)];
+        }
+        pol
+    }
+
     /// The original hand-written bot: open as soon as possible, discard the least connected tile.
     pub const BASIC: Policy = Policy {
         w_adj: 4.0,
