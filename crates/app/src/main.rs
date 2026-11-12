@@ -1277,7 +1277,7 @@ fn plan_title(steps: &[Step], s: &State) -> String {
     parts.join(" · ")
 }
 
-fn step_view(step: &Step, n: usize, okey: Option<Tile>, s: &State) -> impl IntoView + use<> {
+fn step_view(step: &Step, n: usize, okey: Option<Tile>, s: &State, kept: &[Tile]) -> impl IntoView + use<> {
     let dot = |label: String, style: String| view! { <span class="dot num" style=style>{label}</span> };
     let color_of = |n: usize| format!("background:{}", GROUP_COLORS[(n - 1) % GROUP_COLORS.len()]);
     match step.clone() {
@@ -1301,10 +1301,19 @@ fn step_view(step: &Step, n: usize, okey: Option<Tile>, s: &State) -> impl IntoV
                 side => format!("perinin {}", side_text(side)),
             };
             let note = (tile == JOKER && stands_for != JOKER).then(|| format!("okey = {}", name(stands_for)));
+            let foreign = owner != 0 && !(s.rules.partners && owner == 2);
+            let trap = (tile == JOKER && foreign && s.rules.joker_retrieve && kept.contains(&stands_for)).then(|| {
+                format!(
+                    "Sonraki tur elindeki {} taşını koyup okeyi geri alırsın: {} perinden okey kaptığı için ona {} ceza yazılır.",
+                    name(stands_for),
+                    SEAT_NAMES[owner as usize],
+                    s.rules.okey_lost_penalty
+                )
+            });
             view! {
                 <li>{dot(n.to_string(), "background:#fff;color:#111;box-shadow:inset 0 0 0 1.5px #111".into())}
                     <span class="row">{tile_view(tile, okey)}</span>
-                    <span class="what">{format!("{whose} {place}")}<span class="row mini">{tiles_view(&onto, okey)}</span>{note.map(|x| view! { <small>{x}</small> })}</span>
+                    <span class="what">{format!("{whose} {place}")}<span class="row mini">{tiles_view(&onto, okey)}</span>{note.map(|x| view! { <small>{x}</small> })}{trap.map(|x| view! { <b class="plan-note">{x}</b> })}</span>
                 </li>
             }
             .into_any()
@@ -1401,6 +1410,12 @@ fn Plan() -> impl IntoView {
             };
             format!("{} senaryo{}{cut}{ai}", rep.iterations, if r.done { "" } else { "…" })
         });
+        let kept = arrange(&s.hand, Some(&steps))
+            .into_iter()
+            .flatten()
+            .filter(|&(_, m)| m == Mark::Plain)
+            .map(|(t, _)| t)
+            .collect::<Vec<_>>();
         let mut k = 0;
         let list = steps
             .iter()
@@ -1408,7 +1423,7 @@ fn Plan() -> impl IntoView {
                 if !matches!(x, Step::Discard { .. }) {
                     k += 1;
                 }
-                step_view(x, k, okey, &s)
+                step_view(x, k, okey, &s, &kept)
             })
             .collect_view();
         let alts = report.clone().map(|r| alternatives(ctx, &r));
