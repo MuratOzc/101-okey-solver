@@ -1,6 +1,8 @@
 use okey_engine::analysis::{Analyzer, Options, Report, View};
+use okey_engine::net::Net;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::sync::Arc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent};
@@ -14,6 +16,8 @@ enum Req {
         seed: u64,
         #[serde(default)]
         options: Options,
+        #[serde(default)]
+        model: bool,
     },
     Stop,
 }
@@ -36,7 +40,17 @@ struct Job {
 
 thread_local! {
     static JOB: RefCell<Option<Job>> = const { RefCell::new(None) };
+    static NET: Option<Arc<Net>> = network(include_bytes!("../model/value.bin"));
+    static TEAM_NET: Option<Arc<Net>> = network(include_bytes!("../model/partners.bin"));
 }
+
+fn network(bytes: &[u8]) -> Option<Arc<Net>> {
+    let mut net = Net::from_bytes(bytes).ok()?;
+    net.discards = PLAY_ON_DISCARDS;
+    Some(Arc::new(net))
+}
+
+const PLAY_ON_DISCARDS: usize = 5;
 
 const MAX_ITERATIONS: u64 = 4000;
 const MAX_MS: f64 = 60_000.0;
@@ -102,8 +116,14 @@ fn main() {
                 view,
                 seed,
                 options,
+                model,
             }) => match Analyzer::with_options(view, seed, options) {
-                Ok(an) => {
+                Ok(mut an) => {
+                    for net in [&NET, &TEAM_NET] {
+                        if model && let Some(net) = net.with(|net| net.clone()) {
+                            an.use_model(net, 0.0, true);
+                        }
+                    }
                     JOB.with(|j| {
                         *j.borrow_mut() = Some(Job {
                             generation,

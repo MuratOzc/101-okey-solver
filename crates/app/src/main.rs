@@ -37,6 +37,7 @@ enum Req<'a> {
         view: &'a okey_engine::analysis::View,
         seed: u64,
         options: Options,
+        model: bool,
     },
     Stop,
 }
@@ -74,7 +75,7 @@ fn worker_count() -> usize {
 }
 
 /// Start the same analysis on every worker, each with its own random deals.
-fn start_all(generation: u32, view: &okey_engine::analysis::View) {
+fn start_all(generation: u32, view: &okey_engine::analysis::View, model: bool) {
     let base = js_sys::Date::now() as u64;
     LATEST.with(|l| l.borrow_mut().iter_mut().for_each(|r| *r = None));
     WORKERS.with(|ws| {
@@ -84,6 +85,7 @@ fn start_all(generation: u32, view: &okey_engine::analysis::View) {
                 view,
                 seed: base.wrapping_add(i as u64 * 0x9E37_79B9),
                 options: Options::default(),
+                model,
             };
             if let Ok(j) = serde_json::to_string(&req) {
                 let _ = w.post_message(&JsValue::from_str(&j));
@@ -274,8 +276,12 @@ fn App() -> impl IntoView {
     }
 
     Effect::new(move |_| {
-        let view = ctx.st.with(|s| s.view());
-        let key = view.as_ref().and_then(|v| serde_json::to_string(v).ok()).unwrap_or_default();
+        let (view, model) = ctx.st.with(|s| (s.view(), s.model));
+        let key = view
+            .as_ref()
+            .and_then(|v| serde_json::to_string(v).ok())
+            .map(|v| format!("{model}{v}"))
+            .unwrap_or_default();
         if LAST_SENT.with(|l| *l.borrow() == key) {
             return;
         }
@@ -287,7 +293,7 @@ fn App() -> impl IntoView {
         analysis.set(None);
         ctx.pick.set(None);
         match view {
-            Some(v) => start_all(generation, &v),
+            Some(v) => start_all(generation, &v, model),
             None => stop_all(),
         }
     });
@@ -841,7 +847,13 @@ fn Plan() -> impl IntoView {
                 let status = resp.as_ref().zip(report.as_ref()).map(|(r, rep)| {
                     let moves = if rep.positions > 0 { format!("{} farklı indirme şekli, her biri için atılacak her taş · ", rep.positions) } else { String::new() };
                     let cut = if rep.truncated { " · seçenek çok fazla, bir kısmı incelenemedi" } else { "" };
-                    let deep = if rep.deep { " · sonraki turun da hesaba katılıyor" } else { "" };
+                    let deep = if rep.deep {
+                        " · sonraki turun da hesaba katılıyor"
+                    } else if rep.model {
+                        " · sonraki turlarını yapay zekâ oynuyor"
+                    } else {
+                        ""
+                    };
                     format!("{moves}{} senaryo{}{cut}{deep}", rep.iterations, if r.done { " · tamam" } else { " · netleşiyor…" })
                 });
                 let stats = cand.as_ref().map(|c| {

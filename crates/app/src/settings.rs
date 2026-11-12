@@ -130,6 +130,15 @@ pub fn Settings() -> impl IntoView {
                 <button on:click=move |_| ctx.show_settings.set(false)>"Kapat"</button>
                 <button on:click=move |_| set_rules(Box::new(|r| *r = Rules::default()))>"Varsayılana dön"</button>
             </div>
+            <h3>"Yapay zekâ"</h3>
+            <label class="opt">
+                <input type="checkbox"
+                    prop:checked=move || st.with(|s| s.model)
+                    on:change=move |ev| { let v = event_target_checked(&ev); ctx.act(move |s| { s.model = v; Ok(()) }) }
+                />
+                "Simülasyonlarda sonraki turlarımı eğitilmiş model oynasın"
+            </label>
+            <div class="hint">"Daha isabetli ama daha yavaş. Tekli ve eşli oyunda, varsayılan kurallarda ve maç durumu kapalıyken devreye girer."</div>
             {bools().into_iter().map(|(title, items)| view! {
                 <h3>{title}</h3>
                 {items.into_iter().map(|(label, get, set)| view! {

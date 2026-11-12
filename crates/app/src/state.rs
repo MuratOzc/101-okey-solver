@@ -55,6 +55,7 @@ pub struct State {
     pub buffer: Vec<Tile>,
     pub mode: Mode,
     pub result: Option<String>,
+    pub model: bool,
     /// Play for the match (chance of ending on top) instead of for this hand's points.
     pub match_on: bool,
     pub hand_no: u8,
@@ -83,6 +84,7 @@ impl Default for State {
             buffer: vec![],
             mode: Mode::Gosterge,
             result: None,
+            model: true,
             match_on: false,
             hand_no: 1,
             hands_total: 11,
@@ -109,6 +111,7 @@ impl State {
             rules: self.rules.clone(),
             starter: (self.starter + 1) % 4,
             match_on: self.match_on,
+            model: self.model,
             hand_no: (self.hand_no + 1).min(self.hands_total),
             hands_total: self.hands_total,
             behind: self.behind,
