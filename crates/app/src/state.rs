@@ -368,6 +368,9 @@ impl State {
         self.buffer.clear();
         self.table.new_turn();
         self.mode = Mode::Idle;
+        if self.deck_count == 0 {
+            self.deck_out();
+        }
     }
 
     /// Remove `tiles` from the current player (my hand, or an opponent's known tiles and count).
@@ -893,6 +896,16 @@ mod tests {
         s.opp_draw().unwrap();
         assert!(s.key_enabled(t("K7")));
         assert!(!s.key_enabled(t("S1")), "both S1 are in my hand");
+    }
+
+    #[test]
+    fn the_hand_ends_once_the_last_tile_is_drawn_and_discarded() {
+        let mut s = started();
+        s.discard(0, t("Si13")).unwrap();
+        s.deck_count = 1;
+        s.opp_draw().unwrap();
+        s.key(t("K7")).unwrap();
+        assert_eq!(s.stage, Stage::Over, "nobody may take the side tile once the deck is empty");
     }
 
     #[test]

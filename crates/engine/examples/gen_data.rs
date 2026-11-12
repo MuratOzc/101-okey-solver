@@ -82,6 +82,9 @@ fn recorded_turn(
 ) -> Option<Outcome> {
     let p = g.current;
     let seat_is_model = model[p as usize] && s.net.is_some();
+    if !first && g.deck.is_empty() {
+        return Some(Outcome::DeckOut);
+    }
     g.table.new_turn();
     let mut taken = None;
     if !first {

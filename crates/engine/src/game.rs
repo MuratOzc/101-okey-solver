@@ -913,6 +913,9 @@ impl Game {
     /// One full bot turn for the current player.
     pub fn bot_turn(&mut self, sv: &mut Solver) -> Option<Outcome> {
         let p = self.current;
+        if self.deck.is_empty() {
+            return Some(Outcome::DeckOut);
+        }
         self.table.new_turn();
         let taken = if self.bot_wants_take(sv, p) {
             Some(self.take_top(p))
@@ -1079,6 +1082,9 @@ impl Game {
 
     /// One turn for `hero`, chosen by trying every plan and playing each out to the end of the hand.
     fn lookahead_turn(&mut self, sv: &mut Solver, hero: u8, deeper: u8) -> Option<Outcome> {
+        if self.deck.is_empty() {
+            return Some(Outcome::DeckOut);
+        }
         self.table.new_turn();
         let taken = if self.bot_wants_take(sv, hero) {
             Some(self.take_top(hero))

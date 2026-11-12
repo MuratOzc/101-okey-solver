@@ -105,6 +105,9 @@ pub fn model_act(g: &mut Game, sv: &mut Solver, net: &Net, taken: Option<Tile>) 
 
 pub fn model_turn(g: &mut Game, sv: &mut Solver, net: &Net, first: bool) -> Option<Outcome> {
     let p = g.current;
+    if !first && g.deck.is_empty() {
+        return Some(Outcome::DeckOut);
+    }
     g.table.new_turn();
     let mut taken = None;
     if !first {

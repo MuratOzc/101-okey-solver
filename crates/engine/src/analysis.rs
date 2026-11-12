@@ -930,6 +930,7 @@ fn play_decision_on(view: &View, mut g: Game, sv: &mut Solver, d: Decision, dept
             }
             None => out = Some(Outcome::DeckOut),
         },
+        Decision::Take if g.deck.is_empty() => out = Some(Outcome::DeckOut),
         Decision::Take => {
             let t = g.take_top(0);
             out = match ai {

@@ -116,6 +116,9 @@ impl Agent for OracleAgent {
         mine.table.new_turn();
         let mut taken = None;
         let mut out = None;
+        if !first && mine.deck.is_empty() {
+            return Some(Outcome::DeckOut);
+        }
         if !first {
             if mine.bot_wants_take(sv, 0) {
                 taken = Some(mine.take_top(0));
@@ -198,6 +201,9 @@ pub fn search_turn_with(
     help: &Help,
 ) -> Option<Outcome> {
     g.policy[0] = opts.policy;
+    if !first && g.deck.is_empty() {
+        return Some(Outcome::DeckOut);
+    }
     g.table.new_turn();
     let mut taken = None;
     if !first {
