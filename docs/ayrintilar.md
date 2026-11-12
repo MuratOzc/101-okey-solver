@@ -2,17 +2,16 @@
 
 ## Masada kullanım
 
-Program her adımda tek bir soru sorar ve yalnızca o an mümkün olan seçenekleri gösterir.
+Ekran ikiye ayrılır: masa (rakipler, son attıkları taşlar, açılan perler, istakan) ve yanında o an sorulan tek soruyu soran panel. Telefon yan tutulunca panel sağda, dik tutulunca altta durur.
 
-1. **Gösterge** taşını seç. Okey buna göre belirlenir.
-2. **Kimin başladığını** seç.
-3. **Elindeki taşları** gir: önce renk, sonra sayı. Yanlış girdiğin taşa dokununca silinir.
-4. Sıra sendeyken program **öneriyi** gösterir: hangi taşlar hangi pere, hangi uca (sol/sağ) işlenecek, hangi taş atılacak. Yaptıysan "Yaptım"a bas; başka bir şey yaptıysan "Diğer seçenekler"den seç ya da kendin gir.
-5. Sıra rakipteyken ne yaptığını gir: desteden mi çekti, yandan mı aldı, ne açtı, neye işledi, ne attı.
+1. **Gösterge**, **kim başlıyor** ve **taşların** sorulur. Taşlar 4 × 13'lük taş seçiciden tek dokunuşla girilir; bir taşın son kopyası kaldığında altında nokta çıkar, kalmadığında soluklaşır. Yanlış girdiğin taşa yeşil alanda dokunursan silinir.
+2. Sıra sendeyken panel **öneriyi** gösterir; aynı hamle istakanın üstüne de çizilir: aynı renkle çevrili taşlar birlikte indirilir, numaralar sırayı verir, atılacak taş yukarı kalkar. Yaptıysan "Yaptım"a bas; başka bir şey yaptıysan alttaki seçeneklerden birine dokun ya da istakadan kendin seç.
+3. Çekme sırası sendeyken panel desteden çekmeyle yandan almayı karşılaştırır ve **destenin son taşının kime gideceğini** gösterir: herkes desteden çekerse kesin cevap, ve simülasyonlarda gerçekte kimin çektiği.
+4. Sıra rakipteyken istakanın yerine taş seçici gelir: önce desteden mi çekti yandan mı aldı, sonra attığı taş. Per indirdiyse taşlarını sırayla girersin; işlediyse masada o pere dokunursun.
 
 Önerinin altında beklenen puan farkı, bitirme ihtimali ve attığın taşı sağdakinin alma ihtimali yazar. Program düşündükçe sayılar netleşir; beklemek zorunda değilsin.
 
-Sayfanın altındaki kutular: atılan taşlar, elinin durumu ve işine yarayacak taşlar, görülmemiş taşlar. "Bu durumu kopyala" düğmesi o anki durumu metin olarak panoya alır; saçma bir öneri görürsen onu saklamak hatayı yeniden üretmeye yeter.
+Üst çubuktaki ☷ düğmesi atılan taşları, elinin durumunu ve görülmemiş taşları açar; ⚙ ayarları ve maç durumunu. "Bu durumu kopyala" düğmesi o anki durumu metin olarak panoya alır; saçma bir öneri görürsen onu saklamak hatayı yeniden üretmeye yeter.
 
 ### Maç durumu
 
