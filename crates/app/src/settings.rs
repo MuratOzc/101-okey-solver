@@ -124,12 +124,7 @@ pub fn Settings() -> impl IntoView {
         })
     };
     view! {
-        <section class="card settings">
-            <div class="row">
-                <h2>"Kurallar"</h2>
-                <button on:click=move |_| ctx.show_settings.set(false)>"Kapat"</button>
-                <button on:click=move |_| set_rules(Box::new(|r| *r = Rules::default()))>"Varsayılana dön"</button>
-            </div>
+        <div class="settings">
             <h3>"Yapay zekâ"</h3>
             <label class="opt">
                 <input type="checkbox"
@@ -138,9 +133,13 @@ pub fn Settings() -> impl IntoView {
                 />
                 "Simülasyonlarda sonraki turlarımı eğitilmiş model oynasın"
             </label>
-            <div class="hint">"Daha isabetli ama daha yavaş. Tekli ve eşli oyunda, varsayılan kurallarda ve maç durumu kapalıyken devreye girer."</div>
+            <p class="muted">"Daha isabetli ama daha yavaş. Tekli ve eşli oyunda, varsayılan kurallarda ve maç durumu kapalıyken devreye girer."</p>
+            <div class="rules-head">
+                <h3>"Kurallar"</h3>
+                <button class="btn light" on:click=move |_| set_rules(Box::new(|r| *r = Rules::default()))>"Varsayılana dön"</button>
+            </div>
             {bools().into_iter().map(|(title, items)| view! {
-                <h3>{title}</h3>
+                <h4>{title}</h4>
                 {items.into_iter().map(|(label, get, set)| view! {
                     <label class="opt">
                         <input type="checkbox"
@@ -162,7 +161,7 @@ pub fn Settings() -> impl IntoView {
                 "Yandan alınan okeye de ceza"
             </label>
             {nums().into_iter().map(|(title, items)| view! {
-                <h3>{title}</h3>
+                <h4>{title}</h4>
                 {items.into_iter().map(|(label, get, set)| view! {
                     <label class="opt num">
                         <span>{label}</span>
@@ -177,6 +176,6 @@ pub fn Settings() -> impl IntoView {
                     </label>
                 }).collect_view()}
             }).collect_view()}
-        </section>
+        </div>
     }
 }

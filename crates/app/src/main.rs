@@ -20,6 +20,8 @@ use web_sys::{MessageEvent, Worker};
 const STORAGE_KEY: &str = "okey101.state.v2";
 const UNDO_LIMIT: usize = 300;
 const SEAT_OWNER: [&str; 4] = ["kendi", "Sağ'ın", "Karşı'nın", "Sol'un"];
+const OPPONENTS: [u8; 3] = [3, 2, 1];
+const GROUP_COLORS: [&str; 6] = ["#22c55e", "#38bdf8", "#f59e0b", "#e879f9", "#f87171", "#a3e635"];
 
 #[derive(Deserialize, Clone, Debug)]
 struct Resp {
@@ -74,7 +76,6 @@ fn worker_count() -> usize {
     cores.saturating_sub(1).clamp(1, MAX_WORKERS)
 }
 
-/// Start the same analysis on every worker, each with its own random deals.
 fn start_all(generation: u32, view: &okey_engine::analysis::View, model: bool) {
     let base = js_sys::Date::now() as u64;
     LATEST.with(|l| l.borrow_mut().iter_mut().for_each(|r| *r = None));
@@ -104,7 +105,6 @@ fn stop_all() {
     });
 }
 
-/// Fold every worker's latest report for the current position into one.
 fn merged(generation: u32) -> Option<Resp> {
     LATEST.with(|l| {
         let l = l.borrow();
@@ -131,15 +131,19 @@ fn merged(generation: u32) -> Option<Resp> {
     })
 }
 
+type Choice = (Decision, Option<Move>);
+
 #[derive(Clone, Copy)]
 pub struct Ctx {
     pub st: RwSignal<State>,
     msg: RwSignal<Option<String>>,
     analysis: RwSignal<Option<Resp>>,
-    color: RwSignal<u8>,
     pub show_settings: RwSignal<bool>,
-    /// An alternative the player picked over the top recommendation, with its steps.
-    pick: RwSignal<Option<(Decision, Option<Move>)>>,
+    show_info: RwSignal<bool>,
+    pick: RwSignal<Option<Choice>>,
+    best: Memo<Option<Choice>>,
+    chosen: Memo<Option<Choice>>,
+    steps: Memo<Option<Vec<Step>>>,
 }
 
 impl Ctx {
@@ -180,22 +184,28 @@ impl Ctx {
     }
 }
 
-fn tile_class(t: Tile, okey: Option<Tile>) -> String {
+fn color_class(t: Tile) -> &'static str {
     if t == JOKER {
-        "tile joker".into()
-    } else if Some(t) == okey {
-        format!("tile c{} sahte", color(t))
+        "ok"
     } else {
-        format!("tile c{}", color(t))
+        ["k", "s", "m", "si"][color(t) as usize]
     }
 }
 
-fn tile_text(t: Tile) -> String {
-    if t == JOKER { "OK".into() } else { num(t).to_string() }
-}
-
 fn tile_view(t: Tile, okey: Option<Tile>) -> impl IntoView + use<> {
-    view! { <span class=tile_class(t, okey) title=name(t)>{tile_text(t)}</span> }
+    let sahte = t != JOKER && Some(t) == okey;
+    let title = if t == JOKER {
+        "Okey".to_string()
+    } else if sahte {
+        format!("Sahte okey ({} yerine)", name(t))
+    } else {
+        name(t)
+    };
+    view! {
+        <span class=format!("t {}", color_class(t)) class:sahte=sahte title=title>
+            {if t == JOKER { "★".to_string() } else { num(t).to_string() }}
+        </span>
+    }
 }
 
 fn tiles_view(tiles: &[Tile], okey: Option<Tile>) -> impl IntoView + use<> {
@@ -204,6 +214,14 @@ fn tiles_view(tiles: &[Tile], okey: Option<Tile>) -> impl IntoView + use<> {
 
 fn okey_tile(s: &State) -> Option<Tile> {
     s.gosterge.map(okey_of)
+}
+
+fn seat_name(s: &State, p: u8) -> String {
+    if s.rules.partners && p == 2 {
+        "Karşı (eş)".into()
+    } else {
+        SEAT_NAMES[p as usize].into()
+    }
 }
 
 fn shape_label(sh: &Shape) -> &'static str {
@@ -222,7 +240,6 @@ fn side_text(side: Side) -> &'static str {
     }
 }
 
-/// Which tiles the okeys in a meld stand for, as a short note.
 fn okey_note(sh: &Shape) -> Option<String> {
     match *sh {
         Shape::Run { color, lo, hi, jokers } if jokers != 0 => {
@@ -237,6 +254,10 @@ fn okey_note(sh: &Shape) -> Option<String> {
     }
 }
 
+fn pct(x: f64) -> String {
+    format!("%{:.0}", x * 100.0)
+}
+
 fn main() {
     console_error_panic_hook::set_once();
     mount_to_body(App);
@@ -244,17 +265,41 @@ fn main() {
 
 #[component]
 fn App() -> impl IntoView {
+    let st = RwSignal::new(load_state());
+    let analysis: RwSignal<Option<Resp>> = RwSignal::new(None);
+    let pick: RwSignal<Option<Choice>> = RwSignal::new(None);
+    let best = Memo::new(move |_| {
+        analysis.with(|a| {
+            a.as_ref()
+                .and_then(|r| r.report.as_ref())
+                .and_then(|r| r.candidates.first().map(|c| (c.decision, c.mv.clone())))
+        })
+    });
+    let chosen = Memo::new(move |_| pick.get().or(best.get()));
+    let steps = Memo::new(move |_| {
+        let (d, mv) = chosen.get()?;
+        if matches!(d, Decision::Draw | Decision::Take) {
+            return None;
+        }
+        let v = st.with(|s| s.view())?;
+        Some(match &mv {
+            Some(m) => describe_move(&v, m),
+            None => describe(&v, d),
+        })
+    });
     let ctx = Ctx {
-        st: RwSignal::new(load_state()),
+        st,
         msg: RwSignal::new(None),
-        analysis: RwSignal::new(None),
-        color: RwSignal::new(0),
+        analysis,
         show_settings: RwSignal::new(false),
-        pick: RwSignal::new(None),
+        show_info: RwSignal::new(false),
+        pick,
+        best,
+        chosen,
+        steps,
     };
     provide_context(ctx);
 
-    let analysis = ctx.analysis;
     for i in 0..worker_count() {
         let Ok(w) = Worker::new("./worker_loader.js") else { break };
         let onmsg = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
@@ -276,7 +321,7 @@ fn App() -> impl IntoView {
     }
 
     Effect::new(move |_| {
-        let (view, model) = ctx.st.with(|s| (s.view(), s.model));
+        let (view, model) = st.with(|s| (s.view(), s.model));
         let key = view
             .as_ref()
             .and_then(|v| serde_json::to_string(v).ok())
@@ -291,53 +336,95 @@ fn App() -> impl IntoView {
             *g.borrow()
         });
         analysis.set(None);
-        ctx.pick.set(None);
+        pick.set(None);
         match view {
             Some(v) => start_all(generation, &v, model),
             None => stop_all(),
         }
     });
 
-    let st = ctx.st;
     view! {
-        <div class="app" class:kbd-on=move || st.with(|s| s.keyboard_visible())>
-            <Header/>
+        <div class="app">
+            <TopBar/>
             <Show when=move || st.with(|s| s.stage != Stage::Setup)>
                 <Seats/>
             </Show>
-            <main>
-                <Message/>
-                <Show when=move || ctx.show_settings.get()>
-                    <settings::Settings/>
-                </Show>
-                {move || match st.with(|s| (s.stage, s.turn == 0)).0 {
-                    Stage::Setup => view! { <Setup/> }.into_any(),
-                    Stage::Play if st.with(|s| s.turn == 0) => view! { <Wizard/> <MyRack/> <TableView/> <Details/> }.into_any(),
-                    Stage::Play => view! { <Wizard/> <TableView/> <MyRack/> <Details/> }.into_any(),
-                    Stage::Over => view! { <Over/> <TableView/> }.into_any(),
+            <TableZone/>
+            <div class="bottom">
+                {move || if st.with(|s| s.keyboard_visible()) {
+                    view! { <Picker/> }.into_any()
+                } else if st.with(|s| s.stage == Stage::Setup) {
+                    ().into_any()
+                } else {
+                    view! { <Rack/> }.into_any()
                 }}
-                <Show when=move || st.with(|s| s.stage == Stage::Play || (s.stage == Stage::Setup && matches!(s.mode, Mode::Hand)))>
-                    <MatchBox/>
-                </Show>
-            </main>
-            <Show when=move || st.with(|s| s.keyboard_visible())>
-                <Keyboard/>
+            </div>
+            <aside class="panel">
+                <Message/>
+                <Panel/>
+            </aside>
+            <Show when=move || ctx.show_settings.get()>
+                <Modal title="Ayarlar" open=ctx.show_settings>
+                    <details class="matchbox" open=move || st.with(|s| s.match_on)>
+                        <summary>"Maç durumu"</summary>
+                        <MatchBox/>
+                    </details>
+                    <settings::Settings/>
+                </Modal>
+            </Show>
+            <Show when=move || ctx.show_info.get()>
+                <Modal title="Taşlar" open=ctx.show_info>
+                    <Info/>
+                </Modal>
             </Show>
         </div>
     }
 }
 
 #[component]
-fn Header() -> impl IntoView {
-    let ctx = expect_context::<Ctx>();
+fn Modal(title: &'static str, open: RwSignal<bool>, children: Children) -> impl IntoView {
     view! {
-        <header>
-            <span class="brand">"101"</span>
-            <span class="deck">
-                {move || ctx.st.with(|s| if s.stage == Stage::Setup { String::new() } else { format!("Deste {}", s.deck_count) })}
-            </span>
-            <button on:click=move |_| ctx.undo()>"↶ Geri al"</button>
-            <button on:click=move |_| ctx.show_settings.update(|v| *v = !*v)>"Kurallar"</button>
+        <div class="scrim" on:click=move |_| open.set(false)>
+            <div class="modal" on:click=|e| e.stop_propagation()>
+                <div class="modal-head">
+                    <h2>{title}</h2>
+                    <button class="btn light" on:click=move |_| open.set(false)>"Kapat"</button>
+                </div>
+                <div class="modal-body">{children()}</div>
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn TopBar() -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
+    let st = ctx.st;
+    view! {
+        <header class="top">
+            {move || {
+                let s = st.get();
+                let deck = (s.stage == Stage::Play).then(|| view! { <span class="chip">"Deste " <b>{s.deck_count}</b></span> });
+                let gost = s.gosterge.filter(|_| s.stage != Stage::Setup).map(|g| view! {
+                    <span class="chip">"Gösterge " {tile_view(g, None)} " okey " {tile_view(okey_of(g), None)}</span>
+                });
+                let head = match s.stage {
+                    Stage::Setup => Some("Yeni el"),
+                    Stage::Over => Some("El bitti"),
+                    Stage::Play => None,
+                }
+                .map(|t| view! { <span class="chip">{t}</span> });
+                let game = s.match_on.then(|| view! {
+                    <button class="chip link" on:click=move |_| ctx.show_settings.set(true)>{format!("Maç {}/{}", s.hand_no, s.hands_total)}</button>
+                });
+                view! { {head} {deck} {gost} {game} }
+            }}
+            <span class="grow"></span>
+            <button class="icon" title="Geri al" on:click=move |_| ctx.undo()>"↶"</button>
+            <Show when=move || st.with(|s| s.stage != Stage::Setup)>
+                <button class="icon" title="Taşlar: atılanlar, görülmemişler" on:click=move |_| ctx.show_info.set(true)>"☷"</button>
+            </Show>
+            <button class="icon" title="Ayarlar" on:click=move |_| ctx.show_settings.set(true)>"⚙"</button>
         </header>
     }
 }
@@ -350,23 +437,308 @@ fn Seats() -> impl IntoView {
         <div class="seats">
             {move || {
                 let s = st.get();
-                (0..4usize).map(|p| {
-                    let pv = &s.players[p];
-                    let count = if p == 0 { s.hand.len() as u8 } else { pv.hand_len.unwrap_or(0) };
+                let okey = okey_tile(&s);
+                OPPONENTS.iter().map(|&p| {
+                    let pv = &s.players[p as usize];
+                    let count = pv.hand_len.unwrap_or(0);
                     let badge = match pv.opened {
-                        Opened::No => String::new(),
-                        Opened::Melds => format!("açtı {}", pv.open_value),
-                        Opened::Pairs => format!("{} çift", pv.open_value),
+                        Opened::No => None,
+                        Opened::Melds => Some(format!("açtı {}", pv.open_value)),
+                        Opened::Pairs => Some(format!("{} çift", pv.open_value)),
                     };
-                    let cur = s.stage == Stage::Play && s.turn as usize == p;
+                    let cur = s.stage == Stage::Play && s.turn == p;
+                    let takeable = p == 3 && s.stage == Stage::Play && s.turn == 0 && !s.may_act();
+                    let name = seat_name(&s, p);
+                    let initials: String = SEAT_NAMES[p as usize].chars().take(2).collect();
                     view! {
                         <div class="seat" class:cur=cur>
-                            <b>{SEAT_NAMES[p]}</b>
-                            <span>{format!("{count} taş")}</span>
-                            <small>{badge}</small>
+                            <span class="av">{initials}</span>
+                            <span class="who">
+                                <b>{name}</b>
+                                <small>{format!("{count} taş")} {badge.map(|b| view! { " · " <span class="open">{b}</span> })}</small>
+                            </span>
+                            <span class="last" class:take=takeable title="Son attığı">
+                                {pv.discards.last().map(|&t| tile_view(t, okey))}
+                            </span>
                         </div>
                     }
                 }).collect_view()
+            }}
+        </div>
+    }
+}
+
+#[component]
+fn TableZone() -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
+    let st = ctx.st;
+    view! {
+        <section class="tablezone">
+            {move || {
+                let s = st.get();
+                let okey = okey_tile(&s);
+                if s.stage == Stage::Setup {
+                    return setup_table(ctx, &s).into_any();
+                }
+                let pending = (s.mode == Mode::MeldEntry && !s.buffer.is_empty()).then(|| s.buffer.clone());
+                let owners: Vec<u8> = [3u8, 2, 1, 0]
+                    .into_iter()
+                    .filter(|&o| s.table.melds.iter().any(|m| m.owner == o) || (pending.is_some() && o == s.turn))
+                    .collect();
+                if owners.is_empty() {
+                    return view! { <div class="empty">"Henüz açan yok"</div> }.into_any();
+                }
+                let menu = match s.mode {
+                    Mode::MeldMenu(i) => Some(i),
+                    _ => None,
+                };
+                owners.into_iter().map(|o| {
+                    let melds: Vec<_> = s.table.melds.iter().enumerate()
+                        .filter(|(_, m)| m.owner == o)
+                        .map(|(i, m)| (i, m.shape.tiles(), s.meld_tappable(i)))
+                        .collect();
+                    let ghost = pending.clone().filter(|_| o == s.turn);
+                    view! {
+                        <div class="owner">
+                            <span class="oname">{seat_name(&s, o)}</span>
+                            <div class="melds">
+                                {melds.into_iter().map(|(i, tiles, tap)| view! {
+                                    <button class="grp" class:tap=tap class:on={menu == Some(i)} disabled=!tap
+                                        on:click=move |_| ctx.act(|s| { s.buffer.clear(); s.mode = Mode::MeldMenu(i); Ok(()) })>
+                                        {tiles_view(&tiles, okey)}
+                                    </button>
+                                }).collect_view()}
+                                {ghost.map(|g| view! { <span class="grp ghost">{tiles_view(&g, okey)}</span> })}
+                            </div>
+                        </div>
+                    }
+                }).collect_view().into_any()
+            }}
+        </section>
+    }
+}
+
+fn setup_table(ctx: Ctx, s: &State) -> impl IntoView + use<> {
+    let okey = okey_tile(s);
+    let gost = s.gosterge.map(|g| {
+        view! {
+            <div class="gost">
+                <span class="glabel">"Gösterge"</span>
+                <span class="big-tile">{tile_view(g, None)}</span>
+                <span class="glabel">"okey " {tile_view(okey_of(g), None)}</span>
+            </div>
+        }
+    });
+    let hand = (s.mode == Mode::Hand).then(|| {
+        let tiles = s.hand.clone();
+        view! {
+            <div class="entered">
+                {tiles.into_iter().enumerate().map(|(i, t)| view! {
+                    <button class="tbtn" title="Sil" on:click=move |_| ctx.act(|s| { s.remove_from_hand(i); Ok(()) })>{tile_view(t, okey)}</button>
+                }).collect_view()}
+            </div>
+        }
+    });
+    view! { <div class="setup">{gost}{hand}</div> }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mark {
+    Plain,
+    Group(usize),
+    Lay(usize),
+    Swap(usize),
+    Throw,
+}
+
+fn take_tile(rest: &mut Vec<Tile>, t: Tile) -> bool {
+    match rest.iter().position(|&x| x == t) {
+        Some(i) => {
+            rest.remove(i);
+            true
+        }
+        None => false,
+    }
+}
+
+fn arrange(hand: &[Tile], steps: Option<&[Step]>) -> Vec<Vec<(Tile, Mark)>> {
+    let mut rest = hand.to_vec();
+    let mut chunks: Vec<Vec<(Tile, Mark)>> = Vec::new();
+    let mut n = 0;
+    for step in steps.unwrap_or_default() {
+        let (tiles, mark) = match step {
+            Step::Meld { shape, .. } => {
+                n += 1;
+                (shape.tiles(), Mark::Group(n))
+            }
+            Step::Layoff { tile, .. } => {
+                n += 1;
+                (vec![*tile], Mark::Lay(n))
+            }
+            Step::Swap { give, .. } => {
+                n += 1;
+                (give.clone(), Mark::Swap(n))
+            }
+            Step::Discard { tile, .. } => (vec![*tile], Mark::Throw),
+        };
+        let chunk: Vec<(Tile, Mark)> = tiles.into_iter().filter(|&t| take_tile(&mut rest, t)).map(|t| (t, mark)).collect();
+        if !chunk.is_empty() {
+            chunks.push(chunk);
+        }
+    }
+    let rest_start = chunks.len();
+    rest.sort_unstable();
+    for t in rest {
+        let key = if t == JOKER { 9 } else { color(t) };
+        let same = chunks.len() > rest_start
+            && chunks
+                .last()
+                .and_then(|c| c.last())
+                .is_some_and(|&(p, _)| if p == JOKER { 9 } else { color(p) } == key);
+        if same {
+            chunks.last_mut().unwrap().push((t, Mark::Plain));
+        } else {
+            chunks.push(vec![(t, Mark::Plain)]);
+        }
+    }
+    chunks
+}
+
+fn split_shelves(chunks: Vec<Vec<(Tile, Mark)>>) -> [Vec<Vec<(Tile, Mark)>>; 2] {
+    let total: usize = chunks.iter().map(|c| c.len()).sum();
+    let half = total.div_ceil(2);
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    let mut count = 0;
+    for c in chunks {
+        let fits = b.is_empty() && (a.is_empty() || (count < half && count + c.len() <= 15));
+        if fits {
+            count += c.len();
+            a.push(c);
+        } else {
+            b.push(c);
+        }
+    }
+    [a, b]
+}
+
+#[component]
+fn Rack() -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
+    let st = ctx.st;
+    view! {
+        <div class="rack">
+            {move || {
+                let s = st.get();
+                let okey = okey_tile(&s);
+                let me = s.turn == 0 && s.stage == Stage::Play;
+                let active = me && s.may_act();
+                let planning = active && s.mode == Mode::Idle && s.opening_complete();
+                let steps = if planning { ctx.steps.get() } else { None };
+                let mut used = if s.mode == Mode::Manual { s.buffer.clone() } else { vec![] };
+                let pv = &s.players[0];
+                let opened = match pv.opened {
+                    Opened::No => None,
+                    Opened::Melds => Some(format!("açtın {}", pv.open_value)),
+                    Opened::Pairs => Some(format!("{} çift açtın", pv.open_value)),
+                };
+                let head = view! {
+                    <div class="rack-head" class:cur=me>
+                        <b>"Ben"</b>
+                        <span>{format!("{} taş", s.hand.len())}</span>
+                        {opened.map(|o| view! { <span class="open">{o}</span> })}
+                        <span class="grow"></span>
+                        {pv.discards.last().map(|&t| view! { <span class="mine">"attığım " {tile_view(t, okey)}</span> })}
+                    </div>
+                };
+                let shelves = split_shelves(arrange(&s.hand, steps.as_deref()));
+                let shelves = shelves.into_iter().map(|chunks| {
+                    let chunks = chunks.into_iter().map(|chunk| {
+                        chunk.into_iter().enumerate().map(|(i, (t, mark))| {
+                            let sel = used.iter().position(|&b| b == t).map(|k| used.remove(k)).is_some();
+                            let (style, badge) = match mark {
+                                Mark::Group(n) => (format!("--mark:{}", GROUP_COLORS[(n - 1) % GROUP_COLORS.len()]), (i == 0).then(|| n.to_string())),
+                                Mark::Lay(n) => ("--mark:#ffffff".to_string(), Some(n.to_string())),
+                                Mark::Swap(n) => ("--mark:#c084fc".to_string(), Some(n.to_string())),
+                                Mark::Throw => ("--mark:#ef4444".to_string(), Some("AT".to_string())),
+                                Mark::Plain => (String::new(), None),
+                            };
+                            view! {
+                                <button class="tbtn" class:marked={mark != Mark::Plain} class:throw={mark == Mark::Throw} class:sel=sel style=style disabled=!active
+                                    on:click=move |_| ctx.act(|s| {
+                                        if s.mode != Mode::Manual {
+                                            s.buffer.clear();
+                                            s.mode = Mode::Manual;
+                                        }
+                                        if sel {
+                                            if let Some(i) = s.buffer.iter().rposition(|&b| b == t) { s.buffer.remove(i); }
+                                        } else {
+                                            s.buffer.push(t);
+                                        }
+                                        Ok(())
+                                    })>
+                                    {tile_view(t, okey)}
+                                    {badge.map(|b| view! { <i class="badge">{b}</i> })}
+                                </button>
+                            }
+                        }).collect_view()
+                    }).collect::<Vec<_>>();
+                    let mut parts = Vec::new();
+                    for (k, c) in chunks.into_iter().enumerate() {
+                        if k > 0 {
+                            parts.push(view! { <span class="gap"></span> }.into_any());
+                        }
+                        parts.push(c.into_any());
+                    }
+                    view! { <div class="shelf">{parts}</div> }
+                }).collect_view();
+                view! { {head} <div class="wood">{shelves}</div> }
+            }}
+        </div>
+    }
+}
+
+fn picker_hint(s: &State) -> String {
+    let who = seat_name(s, s.turn);
+    match s.mode {
+        Mode::Gosterge => "Gösterge taşına dokun".into(),
+        Mode::Hand => format!("Taşlarına dokun · {} / {}", s.hand.len(), s.expected_hand()),
+        Mode::PickDraw => "Çektiğin taşa dokun".into(),
+        Mode::MeldEntry => "Perin taşlarına sırayla dokun".into(),
+        Mode::PairEntry { okey: true, .. } => "Okeyle çift olacak taşa dokun".into(),
+        Mode::PairEntry { .. } => "Çiftin taşına dokun".into(),
+        _ => format!("{who} hangi taşı attı? Dokun"),
+    }
+}
+
+#[component]
+fn Picker() -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
+    let st = ctx.st;
+    view! {
+        <div class="picker">
+            {move || {
+                let s = st.get();
+                let okey = okey_tile(&s);
+                let seen = s.seen();
+                let cell = |t: Tile| {
+                    let on = s.key_enabled(t);
+                    let left = 2u8.saturating_sub(seen[t as usize]);
+                    let chosen = s.buffer.iter().filter(|&&b| b == t).count();
+                    view! {
+                        <button class="pk" class:one={on && left == 1} class:chosen={chosen > 0} disabled=!on on:click=move |_| ctx.act(|s| s.key(t))>
+                            {tile_view(t, okey)}
+                        </button>
+                    }
+                };
+                let rows = (0..4u8).map(|c| {
+                    let tiles = (1..=13u8).map(|n| cell(id(c, n))).collect_view();
+                    let extra = if c == 0 { cell(JOKER).into_any() } else { view! { <span></span> }.into_any() };
+                    view! { {tiles} {extra} }
+                }).collect_view();
+                view! {
+                    <div class="picker-head">{picker_hint(&s)}</div>
+                    <div class="grid">{rows}</div>
+                }
             }}
         </div>
     }
@@ -377,96 +749,30 @@ fn Message() -> impl IntoView {
     let ctx = expect_context::<Ctx>();
     view! {
         <Show when=move || ctx.msg.with(|m| m.is_some())>
-            <div class="msg" on:click=move |_| ctx.msg.set(None)>{move || ctx.msg.get().unwrap_or_default()}</div>
+            <div class="toast" on:click=move |_| ctx.msg.set(None)>{move || ctx.msg.get().unwrap_or_default()}</div>
         </Show>
     }
 }
 
 #[component]
-fn Setup() -> impl IntoView {
-    let ctx = expect_context::<Ctx>();
-    let st = ctx.st;
-    view! {
-        <section class="card ask">
-            {move || {
-                let s = st.get();
-                let okey = okey_tile(&s);
-                let gost = s.gosterge.map(|g| view! {
-                    <button class="chip" on:click=move |_| ctx.mode(Mode::Gosterge)>"Gösterge " {tile_view(g, None)} " · okey " {tile_view(okey_of(g), None)}</button>
-                });
-                match s.mode {
-                    Mode::Starter => view! {
-                        <div class="step">"2 / 3"</div>
-                        <h2>"Kim başlıyor?"</h2>
-                        <div class="row">{gost}</div>
-                        <div class="choices">
-                            {(0..4u8).map(|p| view! {
-                                <button class="big" on:click=move |_| ctx.act(|s| { s.set_starter(p); Ok(()) })>{SEAT_NAMES[p as usize]}</button>
-                            }).collect_view()}
-                        </div>
-                    }.into_any(),
-                    Mode::Hand => {
-                        let full = s.hand.len() == s.expected_hand();
-                        view! {
-                            <div class="step">"3 / 3"</div>
-                            <h2>{format!("Taşlarını gir · {} / {}", s.hand.len(), s.expected_hand())}</h2>
-                            <div class="row">
-                                {gost}
-                                <button class="chip" on:click=move |_| ctx.mode(Mode::Starter)>{format!("Başlayan: {}", SEAT_NAMES[s.starter as usize])}</button>
-                            </div>
-                            <div class="rack">
-                                {s.hand.iter().enumerate().map(|(i, &t)| view! {
-                                    <button class="tbtn" on:click=move |_| ctx.act(|s| { s.remove_from_hand(i); Ok(()) })>{tile_view(t, okey)}</button>
-                                }).collect_view()}
-                            </div>
-                            {if full {
-                                view! { <button class="primary big wide" on:click=move |_| ctx.act(|s| s.start())>"Başla"</button> }.into_any()
-                            } else {
-                                view! { <div class="hint">"Yanlış girdiğin taşa dokunursan silinir."</div> }.into_any()
-                            }}
-                        }.into_any()
-                    }
-                    _ => view! {
-                        <div class="step">"1 / 3"</div>
-                        <h2>"Gösterge taşı hangisi?"</h2>
-                        <div class="hint">"Ortada açık duran taş. Aşağıdan rengini ve sayısını seç."</div>
-                    }.into_any(),
-                }
-            }}
-        </section>
-    }
-}
-
-#[component]
-fn Over() -> impl IntoView {
-    let ctx = expect_context::<Ctx>();
-    view! {
-        <section class="card ask">
-            <h2>{move || ctx.st.with(|s| s.result.clone().unwrap_or_default())}</h2>
-            <button class="primary big wide" on:click=move |_| ctx.act(|s| { *s = s.new_hand(); Ok(()) })>"Yeni el"</button>
-        </section>
-    }
-}
-
-/// The one card that asks for the next thing.
-#[component]
-fn Wizard() -> impl IntoView {
+fn Panel() -> impl IntoView {
     let ctx = expect_context::<Ctx>();
     let st = ctx.st;
     move || {
         let s = st.get();
         let me = s.turn == 0;
-        match s.mode {
-            Mode::MeldEntry => meld_entry(ctx, &s).into_any(),
-            Mode::Manual if me => manual(ctx, &s).into_any(),
-            Mode::MeldMenu(i) => meld_menu(ctx, &s, i).into_any(),
-            Mode::PairEntry { owner, okey } => pair_entry(ctx, &s, owner, okey).into_any(),
-            Mode::PickDraw => view! {
-                <section class="card ask">
-                    <h2>"Hangi taşı çektin?"</h2>
-                    <div class="hint">"Aşağıdan seç."</div>
-                    <button on:click=move |_| ctx.mode(Mode::Idle)>"Vazgeç"</button>
-                </section>
+        match (s.stage, s.mode) {
+            (Stage::Setup, _) => setup_panel(ctx, &s).into_any(),
+            (Stage::Over, _) => over_panel(ctx, &s).into_any(),
+            (_, Mode::MeldEntry) => meld_entry(ctx, &s).into_any(),
+            (_, Mode::Manual) if me => manual(ctx, &s).into_any(),
+            (_, Mode::MeldMenu(i)) => meld_menu(ctx, &s, i).into_any(),
+            (_, Mode::PairEntry { owner, okey }) => pair_entry(ctx, &s, owner, okey).into_any(),
+            (_, Mode::PickDraw) => view! {
+                <h2>"Hangi taşı çektin?"</h2>
+                <p class="sub">"Çektiğin taşa dokun."</p>
+                <span class="grow"></span>
+                <button class="btn light" on:click=move |_| ctx.mode(Mode::Idle)>"Vazgeç"</button>
             }
             .into_any(),
             _ if me && s.may_act() && !s.opening_complete() => manual(ctx, &s).into_any(),
@@ -478,31 +784,148 @@ fn Wizard() -> impl IntoView {
     }
 }
 
+fn setup_panel(ctx: Ctx, s: &State) -> impl IntoView + use<> {
+    let step = |n: u8, now: u8, text: AnyView, back: Option<Mode>| {
+        let cls = if n < now {
+            "dot done"
+        } else if n == now {
+            "dot now"
+        } else {
+            "dot"
+        };
+        view! {
+            <button class="step" class:clickable=back.is_some() disabled=back.is_none() on:click=move |_| if let Some(m) = back { ctx.mode(m) }>
+                <span class=cls>{if n < now { "✓".to_string() } else { n.to_string() }}</span>
+                <span>{text}</span>
+            </button>
+        }
+    };
+    let now = match s.mode {
+        Mode::Gosterge => 1,
+        Mode::Starter => 2,
+        _ => 3,
+    };
+    let gtext = match s.gosterge {
+        Some(g) => view! { "Gösterge " {tile_view(g, None)} }.into_any(),
+        None => view! { "Gösterge" }.into_any(),
+    };
+    let stext = if now > 2 {
+        view! { {format!("Başlayan: {} ({} taş)", SEAT_NAMES[s.starter as usize], s.expected_hand())} }.into_any()
+    } else {
+        view! { "Kim başlıyor" }.into_any()
+    };
+    let htext = view! { {format!("Taşların · {} / {}", s.hand.len(), s.expected_hand())}  }.into_any();
+    let steps = view! {
+        <div class="steps">
+            {step(1, now, gtext, (now > 1).then_some(Mode::Gosterge))}
+            {step(2, now, stext, (now > 2).then_some(Mode::Starter))}
+            {step(3, now, htext, None)}
+        </div>
+    };
+    match s.mode {
+        Mode::Gosterge => view! {
+            <h2>"Gösterge hangisi?"</h2>
+            <p class="sub">"Ortada açık duran taşa dokun."</p>
+            {steps}
+        }
+        .into_any(),
+        Mode::Starter => view! {
+            <h2>"Kim başlıyor?"</h2>
+            {steps}
+            <div class="choices">
+                {(0..4u8).map(|p| view! {
+                    <button class="btn light big" on:click=move |_| ctx.act(|s| { s.set_starter(p); Ok(()) })>{SEAT_NAMES[p as usize]}</button>
+                }).collect_view()}
+            </div>
+        }
+        .into_any(),
+        _ => {
+            let need = s.expected_hand();
+            let have = s.hand.len();
+            let full = have == need;
+            view! {
+                <h2>"Taşlarını gir"</h2>
+                <p class="sub">"Taşlarına dokun. Yanlış girdiğin taşa yeşil alanda dokunursan silinir."</p>
+                {steps}
+                <div class="progress"><i style=format!("width:{}%", have * 100 / need.max(1))></i></div>
+                <span class="grow"></span>
+                <details class="matchbox inline">
+                    <summary>{match_line(s)}</summary>
+                    <MatchBox/>
+                </details>
+                <div class="actions">
+                    <button class="btn big" class:go=full class:light=!full disabled=!full on:click=move |_| ctx.act(|s| s.start())>
+                        {if full { "Başla".to_string() } else { format!("Başla ({} taş kaldı)", need - have) }}
+                    </button>
+                </div>
+            }
+            .into_any()
+        }
+    }
+}
+
+fn match_line(s: &State) -> String {
+    if s.match_on {
+        let left = s.hands_total.saturating_sub(s.hand_no);
+        format!(
+            "Maç: {}. el / {} · {}",
+            s.hand_no,
+            s.hands_total,
+            if left == 0 {
+                "son el".to_string()
+            } else {
+                format!("{left} el kaldı")
+            }
+        )
+    } else {
+        "Maç durumu: kapalı (sadece bu ele göre oynar)".into()
+    }
+}
+
+fn over_panel(ctx: Ctx, s: &State) -> impl IntoView + use<> {
+    let next = if s.match_on {
+        format!("Yeni el ({} / {})", (s.hand_no + 1).min(s.hands_total), s.hands_total)
+    } else {
+        "Yeni el".into()
+    };
+    view! {
+        <h2>{s.result.clone().unwrap_or_default()}</h2>
+        <p class="sub">"Puanları yazdıysan maç durumunu güncelle."</p>
+        <details class="matchbox inline" open=s.match_on>
+            <summary>{match_line(s)}</summary>
+            <MatchBox/>
+        </details>
+        <span class="grow"></span>
+        <button class="btn go big" on:click=move |_| ctx.act(|s| { *s = s.new_hand(); Ok(()) })>{next}</button>
+    }
+}
+
 fn opp_draw(ctx: Ctx, s: &State) -> impl IntoView + use<> {
-    let who = SEAT_NAMES[s.turn as usize];
+    let who = seat_name(s, s.turn);
     let side = s.side_tile();
     let okey = okey_tile(s);
     let deck = s.deck_count > 0;
+    let from = seat_name(s, State::prev(s.turn));
     view! {
-        <section class="card ask">
-            <h2>{format!("{who} taşı nereden aldı?")}</h2>
-            <div class="choices">
-                {deck.then(|| view! { <button class="primary big" on:click=move |_| ctx.act(|s| s.opp_draw())>"Desteden çekti"</button> })}
-                {side.map(|t| view! {
-                    <button class="big" on:click=move |_| ctx.act(|s| s.take_side())>"Yandan aldı " {tile_view(t, okey)}</button>
-                })}
-                {(!deck).then(|| view! { <button class="big danger" on:click=move |_| ctx.act(|s| { s.deck_out(); Ok(()) })>"Deste bitti · el kapandı"</button> })}
-            </div>
-        </section>
+        <h2>{format!("{who} taşı nereden aldı?")}</h2>
+        <div class="stack">
+            {deck.then(|| view! { <button class="btn go big" on:click=move |_| ctx.act(|s| s.opp_draw())>"Desteden çekti"</button> })}
+            {side.map(|t| view! {
+                <button class="btn light big" on:click=move |_| ctx.act(|s| s.take_side())>"Yandan aldı " {tile_view(t, okey)}</button>
+            })}
+        </div>
+        {side.map(|t| view! { <p class="muted">{format!("Yandaki taş {from} oyuncusunun attığı {}.", name(t))}</p> })}
+        <span class="grow"></span>
+        {(!deck).then(|| view! { <button class="btn danger" on:click=move |_| ctx.act(|s| { s.deck_out(); Ok(()) })>"Deste bitti, el kapandı"</button> })}
     }
 }
 
 fn opp_act(ctx: Ctx, s: &State) -> impl IntoView + use<> {
-    let who = SEAT_NAMES[s.turn as usize];
+    let who = seat_name(s, s.turn);
     let okey = okey_tile(s);
     let pv = s.cur();
     let must = s.taken.map(|t| view! {
-        <div class="warn">"Yandan aldığı " {tile_view(t, okey)} " taşını bu tur kullanmak zorunda. Önce indirdiği peri gir ya da işlediği pere dokun."</div>
+        <div class="warn">"Yandan aldığı " {tile_view(t, okey)} " taşını bu tur kullanmak zorunda: önce indirdiği peri gir ya da işlediği pere dokun."</div>
     });
     let opened_now = s.opened_this_turn.then(|| {
         let what = if pv.opened == Opened::Pairs {
@@ -515,27 +938,25 @@ fn opp_act(ctx: Ctx, s: &State) -> impl IntoView + use<> {
     let can_tap = s.can_lay_off() && (0..s.table.melds.len()).any(|i| s.meld_tappable(i));
     let short = (!s.opening_complete()).then(|| {
         view! {
-            <div class="warn">{s.opening_progress()} " · açılış eksik. Kalan perleri gir; yanlış girdiysen Geri al."</div>
+            <div class="warn">{s.opening_progress()} " · açılış eksik. Kalan perleri gir; yanlışsa geri al."</div>
         }
     });
     view! {
-        <section class="card ask">
-            <h2>{format!("{who} hangi taşı attı?")}</h2>
-            {must}
-            {opened_now}
-            {short}
-            <div class="hint">"Aşağıdan attığı taşa dokun."</div>
-            <div class="row">
-                <button on:click=move |_| ctx.mode(Mode::MeldEntry)>"Önce per / çift indirdi"</button>
-                <button class="danger" on:click=move |_| ctx.act(|s| { let p = s.turn; s.finish(p, None); Ok(()) })>"Bitirdi"</button>
-            </div>
-            {can_tap.then(|| view! { <div class="hint">"İşlediyse ya da okey aldıysa: masada o pere dokun."</div> })}
-        </section>
+        <h2>{format!("{who} ne yaptı?")}</h2>
+        <p class="sub">"Attığı taşa dokun."</p>
+        {must}
+        {opened_now}
+        {short}
+        <div class="choices">
+            <button class="btn light" on:click=move |_| ctx.mode(Mode::MeldEntry)>"Per / çift indirdi"</button>
+            <button class="btn light danger" on:click=move |_| ctx.act(|s| { let p = s.turn; s.finish(p, None); Ok(()) })>"Bitirdi"</button>
+        </div>
+        {can_tap.then(|| view! { <p class="muted">"İşlediyse ya da okey aldıysa masada o pere dokun (sarı çerçeveli)."</p> })}
     }
 }
 
 fn meld_entry(ctx: Ctx, s: &State) -> impl IntoView + use<> {
-    let who = SEAT_NAMES[s.turn as usize];
+    let who = seat_name(s, s.turn);
     let okey = okey_tile(s);
     let problem = s.meld_problem();
     let ok = problem.is_none();
@@ -549,21 +970,20 @@ fn meld_entry(ctx: Ctx, s: &State) -> impl IntoView + use<> {
     let total_class = if s.opening_complete() { "good" } else { "warn" };
     let buffer = s.buffer.clone();
     view! {
-        <section class="card ask">
-            <h2>{format!("{who} hangi taşları indirdi?")}</h2>
-            <div class="hint">"Tek bir perin taşlarına sırayla dokun, sonra Ekle. Birden fazla per varsa tek tek ekle."</div>
-            <div class="rack">
-                {buffer.into_iter().enumerate().map(|(i, t)| view! {
-                    <button class="tbtn" on:click=move |_| ctx.act(|s| { s.buffer.remove(i); Ok(()) })>{tile_view(t, okey)}</button>
-                }).collect_view()}
-            </div>
-            <div class=if ok { "good" } else { "hint" }>{status}</div>
-            {total.map(|t| view! { <div class=total_class>{t}</div> })}
-            <div class="choices">
-                <button class="primary big" disabled=!ok on:click=move |_| ctx.act(|s| s.lay_meld())>"Ekle"</button>
-                <button class="big" on:click=move |_| ctx.mode(Mode::Idle)>"Tamam, bitti"</button>
-            </div>
-        </section>
+        <h2>{format!("{who} hangi taşları indirdi?")}</h2>
+        <p class="sub">"Bir perin taşlarına sırayla dokun, sonra ekle. Birden fazla per varsa tek tek."</p>
+        <div class="buffer">
+            {buffer.into_iter().enumerate().map(|(i, t)| view! {
+                <button class="tbtn" title="Çıkar" on:click=move |_| ctx.act(|s| { s.buffer.remove(i); Ok(()) })>{tile_view(t, okey)}</button>
+            }).collect_view()}
+        </div>
+        <div class=if ok { "good" } else { "muted" }>{status}</div>
+        {total.map(|t| view! { <div class=total_class>{t}</div> })}
+        <span class="grow"></span>
+        <div class="choices">
+            <button class="btn go" disabled=!ok on:click=move |_| ctx.act(|s| s.lay_meld())>"Bu peri ekle"</button>
+            <button class="btn light" on:click=move |_| ctx.mode(Mode::Idle)>"Tamam, bitti"</button>
+        </div>
     }
 }
 
@@ -579,9 +999,9 @@ fn option_label(o: &LayOption) -> String {
 fn meld_menu(ctx: Ctx, s: &State, idx: usize) -> impl IntoView + use<> {
     let okey = okey_tile(s);
     let me = s.turn == 0;
-    let who = SEAT_NAMES[s.turn as usize];
+    let who = seat_name(s, s.turn);
     let Some(m) = s.table.melds.get(idx).cloned() else {
-        return view! { <section class="card ask"><button on:click=move |_| ctx.mode(Mode::Idle)>"Geri"</button></section> }.into_any();
+        return view! { <button class="btn light" on:click=move |_| ctx.mode(Mode::Idle)>"Geri"</button> }.into_any();
     };
     let lays = s.lay_options(idx);
     let swaps: Vec<JokerSlot> = s.swap_options(idx);
@@ -591,49 +1011,47 @@ fn meld_menu(ctx: Ctx, s: &State, idx: usize) -> impl IntoView + use<> {
     let penalty = s.rules.okey_lost_penalty;
     let nothing = lays.is_empty() && swaps.is_empty() && !pair;
     view! {
-        <section class="card ask">
-            <h2>{if me { "Bu pere ne yapıyorsun?".to_string() } else { format!("{who} bu pere ne yaptı?") }}</h2>
-            <div class="meld">{tiles_view(&m.shape.tiles(), okey)}</div>
-            <div class="options">
-                {lays.into_iter().map(|o| view! {
-                    <button class="opt" on:click=move |_| ctx.act(|s| s.lay_option(idx, o))>
-                        {tile_view(o.tile, okey)} <span>{option_label(&o)}</span>
+        <h2>{if me { "Bu pere ne yapıyorsun?".to_string() } else { format!("{who} bu pere ne yaptı?") }}</h2>
+        <div class="buffer">{tiles_view(&m.shape.tiles(), okey)}</div>
+        <div class="stack">
+            {lays.into_iter().map(|o| view! {
+                <button class="btn light opt" on:click=move |_| ctx.act(|s| s.lay_option(idx, o))>
+                    {tile_view(o.tile, okey)} <span>{option_label(&o)}</span>
+                </button>
+            }).collect_view()}
+            {swaps.into_iter().map(|slot| {
+                let give = slot.tiles.clone();
+                let n = slot.jokers;
+                view! {
+                    <button class="btn light opt" on:click=move |_| ctx.act(|s| s.swap(&slot))>
+                        {tiles_view(&give, okey)}
+                        <span>{format!("koyup {} al", if n > 1 { "2 okeyi" } else { "okeyi" })}{foreign.then(|| format!(" · per sahibine {penalty} ceza"))}</span>
                     </button>
-                }).collect_view()}
-                {swaps.into_iter().map(|slot| {
-                    let give = slot.tiles.clone();
-                    let n = slot.jokers;
-                    view! {
-                        <button class="opt" on:click=move |_| ctx.act(|s| s.swap(&slot))>
-                            {tiles_view(&give, okey)}
-                            <span>{format!("koyup {} al", if n > 1 { "2 okeyi" } else { "okeyi" })}{foreign.then(|| format!(" · per sahibine {penalty} ceza"))}</span>
-                        </button>
-                    }
-                }).collect_view()}
-                {pair.then(|| view! {
-                    <button class="opt" on:click=move |_| ctx.mode(Mode::PairEntry { owner, okey: false })>"Buraya çift işle"</button>
-                })}
-            </div>
-            {nothing.then(|| view! { <div class="hint">"Bu pere şu an eklenebilecek bir şey yok (uç başına turda en fazla 2 taş)."</div> })}
-            <button class="big wide" on:click=move |_| ctx.mode(if me { Mode::Manual } else { Mode::Idle })>"Tamam"</button>
-        </section>
-    }.into_any()
+                }
+            }).collect_view()}
+            {pair.then(|| view! {
+                <button class="btn light opt" on:click=move |_| ctx.mode(Mode::PairEntry { owner, okey: false })>"Buraya çift işle"</button>
+            })}
+        </div>
+        {nothing.then(|| view! { <p class="muted">"Bu pere şu an eklenebilecek bir şey yok (uç başına turda en fazla 2 taş)."</p> })}
+        <span class="grow"></span>
+        <button class="btn light" on:click=move |_| ctx.mode(if me { Mode::Manual } else { Mode::Idle })>"Tamam"</button>
+    }
+    .into_any()
 }
 
 fn pair_entry(ctx: Ctx, s: &State, owner: u8, okey: bool) -> impl IntoView + use<> {
     let me = s.turn == 0;
     let room = s.table.pair_room(owner, &s.rules);
     view! {
-        <section class="card ask">
-            <h2>{format!("{} çiftlerine hangi çift?", SEAT_OWNER[owner as usize])}</h2>
-            <div class="hint">{format!("Aşağıdan taşa dokun; çift olarak eklenir. Bu tur {room} çift daha işlenebilir.")}</div>
-            <div class="choices">
-                <button class="big" class:active=okey on:click=move |_| ctx.mode(Mode::PairEntry { owner, okey: !okey })>
-                    {if okey { "Okeyli çift: AÇIK" } else { "Okeyli çift: kapalı" }}
-                </button>
-                <button class="big" on:click=move |_| ctx.mode(if me { Mode::Manual } else { Mode::Idle })>"Tamam"</button>
-            </div>
-        </section>
+        <h2>{format!("{} çiftlerine hangi çift?", SEAT_OWNER[owner as usize])}</h2>
+        <p class="sub">{format!("Taşa dokun; çift olarak eklenir. Bu tur {room} çift daha işlenebilir.")}</p>
+        <div class="choices">
+            <button class="btn light" class:on=okey on:click=move |_| ctx.mode(Mode::PairEntry { owner, okey: !okey })>
+                {if okey { "Okeyli çift: açık" } else { "Okeyli çift: kapalı" }}
+            </button>
+            <button class="btn light" on:click=move |_| ctx.mode(if me { Mode::Manual } else { Mode::Idle })>"Tamam"</button>
+        </div>
     }
 }
 
@@ -643,7 +1061,7 @@ fn manual(ctx: Ctx, s: &State) -> impl IntoView + use<> {
     let problem = s.meld_problem();
     let can_meld = problem.is_none() && n >= 2;
     let status = match (n, &problem, s.buffer_shape()) {
-        (0, _, _) => "Elinden taşlara dokun.".to_string(),
+        (0, _, _) => "İstakadan taşlara dokun.".to_string(),
         (1, _, _) => "Tek taş seçili: atabilirsin. İşlemek için masadaki pere dokun.".to_string(),
         (_, None, Some(sh)) if sh.is_pair() => "Çift ✓".to_string(),
         (_, None, Some(sh)) => format!("{} ✓ · {} puan", shape_label(&sh), sh.open_value(&s.rules)),
@@ -654,22 +1072,21 @@ fn manual(ctx: Ctx, s: &State) -> impl IntoView + use<> {
     let single = (n == 1 && complete).then(|| s.buffer[0]);
     let buffer = s.buffer.clone();
     let short = (!complete).then(|| view! {
-        <div class="warn">{s.opening_progress()} " · açılış tamamlanmadan işleyemez, okey alamaz, taş atamazsın. Eksik perleri indir ya da Geri al."</div>
+        <div class="warn">{s.opening_progress()} " · açılış tamamlanmadan işleyemez, okey alamaz, taş atamazsın. Eksik perleri indir ya da geri al."</div>
     });
     view! {
-        <section class="card ask">
-            <h2>"Kendi hamlen"</h2>
-            {short}
-            <div class="rack">{tiles_view(&buffer, okey)}</div>
-            <div class=if can_meld { "good" } else { "hint" }>{status}</div>
-            <div class="choices">
-                {can_meld.then(|| view! { <button class="primary big" on:click=move |_| ctx.act(|s| s.lay_meld())>"İndir"</button> })}
-                {single.map(|t| view! {
-                    <button class="primary big" on:click=move |_| ctx.act(|s| { s.buffer.clear(); s.discard(0, t) })>"Bu taşı at " {tile_view(t, okey)}</button>
-                })}
-                {complete.then(|| view! { <button class="big" on:click=move |_| ctx.mode(Mode::Idle)>"Öneriye dön"</button> })}
-            </div>
-        </section>
+        <h2>"Kendi hamlen"</h2>
+        {short}
+        <div class="buffer">{tiles_view(&buffer, okey)}</div>
+        <div class=if can_meld { "good" } else { "muted" }>{status}</div>
+        <span class="grow"></span>
+        <div class="stack">
+            {can_meld.then(|| view! { <button class="btn go" on:click=move |_| ctx.act(|s| s.lay_meld())>"İndir"</button> })}
+            {single.map(|t| view! {
+                <button class="btn go" on:click=move |_| ctx.act(|s| { s.buffer.clear(); s.discard(0, t) })>"Bu taşı at " {tile_view(t, okey)}</button>
+            })}
+            {complete.then(|| view! { <button class="btn light" on:click=move |_| ctx.mode(Mode::Idle)>"Öneriye dön"</button> })}
+        </div>
     }
 }
 
@@ -677,13 +1094,42 @@ fn find(r: &Report, d: Decision) -> Option<&CandReport> {
     r.candidates.iter().find(|c| c.decision == d)
 }
 
-/// The expected score gap in words: how far ahead of (or behind) the opponents this move leaves me.
 fn advantage(c: &CandReport) -> String {
     let lead = -c.mean;
     if lead >= 0.0 {
-        format!("{lead:.0} puan öndesin")
+        format!("rakiplerden {lead:.0} puan önde")
     } else {
-        format!("{:.0} puan geridesin", -lead)
+        format!("rakiplerden {:.0} puan geride", -lead)
+    }
+}
+
+fn last_if_all_draw(deck: u8, i_draw: bool) -> Option<u8> {
+    if deck == 0 {
+        return None;
+    }
+    let first = if i_draw { 0 } else { 1 };
+    Some(((first + deck as u32 - 1) % 4) as u8)
+}
+
+fn last_line(s: &State, c: &CandReport) -> String {
+    let p = c.p_last_draw;
+    if s.rules.partners {
+        format!(
+            "biz {} (ben {}, eşim {}) · onlar {}",
+            pct(p[0] + p[2]),
+            pct(p[0]),
+            pct(p[2]),
+            pct(p[1] + p[3])
+        )
+    } else {
+        let mut order: Vec<usize> = (0..4).collect();
+        order.sort_by(|&a, &b| p[b].total_cmp(&p[a]));
+        order
+            .iter()
+            .filter(|&&i| p[i] >= 0.005)
+            .map(|&i| format!("{} {}", seat_name(s, i as u8), pct(p[i])))
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
 }
 
@@ -702,86 +1148,182 @@ fn MyDraw() -> impl IntoView {
         let draw = report.as_ref().and_then(|r| find(r, Decision::Draw).cloned());
         let take = report.as_ref().and_then(|r| find(r, Decision::Take).cloned());
         let best_take = matches!((&draw, &take), (Some(d), Some(t)) if t.mean < d.mean) || (!deck && take_ok);
-        let advice = match (&draw, &take) {
-            (Some(d), Some(t)) => {
-                let diff = (d.mean - t.mean).abs();
-                let pick = if t.mean < d.mean { "Yandan al" } else { "Desteden çek" };
-                match d.p_win.zip(t.p_win) {
-                    Some((dw, tw)) => format!(
-                        "Öneri: {pick} (maçı kazanma %{:.1}, diğeri %{:.1})",
-                        dw.max(tw) * 100.0,
-                        dw.min(tw) * 100.0
-                    ),
-                    None => format!("Öneri: {pick} ({diff:.1} puan daha iyi)"),
-                }
-            }
+        let title = match (&draw, &take) {
+            (Some(_), Some(_)) if best_take => view! { "Yandan al " {side.map(|t| tile_view(t, okey))} }.into_any(),
+            (Some(_), Some(_)) => view! { "Desteden çek" }.into_any(),
+            (None, None) if take_ok => view! { "Hesaplanıyor…" }.into_any(),
+            _ => view! { "Sıra sende: taş çek" }.into_any(),
+        };
+        let sub = match (&draw, &take) {
+            (Some(d), Some(t)) => match d.p_win.zip(t.p_win) {
+                Some((dw, tw)) => format!("Maçı kazanma {} · diğeri {}", pct(dw.max(tw)), pct(dw.min(tw))),
+                None => format!("Diğerinden {:.1} puan daha iyi", (d.mean - t.mean).abs()),
+            },
             (Some(_), None) if side.is_some() && !take_ok => "Yandaki taşı bu tur kullanamazsın, alınamaz.".to_string(),
-            (None, None) if take_ok => "Hesaplanıyor…".to_string(),
             _ => String::new(),
         };
-        view! {
-            <section class="card ask">
-                <h2>"Sıra sende · taş çek"</h2>
-                <div class="hint">{advice}</div>
-                <div class="choices">
-                    {deck.then(|| view! {
-                        <button class="big" class:primary=!best_take on:click=move |_| ctx.act(|s| s.apply(Decision::Draw))>"Desteden çektim"</button>
-                    })}
-                    {side.filter(|_| take_ok).map(|t| view! {
-                        <button class="big" class:primary=best_take on:click=move |_| ctx.act(|s| s.apply(Decision::Take))>"Yandan aldım " {tile_view(t, okey)}</button>
-                    })}
-                    {(!deck && !take_ok).then(|| view! {
-                        <button class="big danger" on:click=move |_| ctx.act(|s| { s.deck_out(); Ok(()) })>"Deste bitti · el kapandı"</button>
-                    })}
+        let bars = draw.as_ref().zip(take.as_ref()).map(|(d, t)| {
+            let best = d.mean.min(t.mean);
+            let width = |c: &CandReport| (100.0 - (c.mean - best) * 2.0).clamp(8.0, 100.0);
+            view! {
+                <div class="bars">
+                    <div class="bar-row" class:best=best_take><span>"Yandan al " {side.map(|x| tile_view(x, okey))}</span><span class="bar"><i style=format!("width:{:.0}%", width(t))></i></span></div>
+                    <div class="bar-row" class:best=!best_take><span>"Desteden çek"</span><span class="bar"><i style=format!("width:{:.0}%", width(d))></i></span></div>
                 </div>
-            </section>
+            }
+        });
+        let rule = deck.then(|| {
+            let take_last = last_if_all_draw(s.deck_count, false).map(|p| seat_name(&s, p));
+            let draw_last = last_if_all_draw(s.deck_count, true).map(|p| seat_name(&s, p));
+            let row = |label: &'static str, last: Option<String>, c: Option<&CandReport>| {
+                let sim = c.map(|c| {
+                    let reach: f64 = c.p_last_draw.iter().sum();
+                    format!(
+                        "Simülasyonda: {} · {} ihtimalle el ondan önce biter",
+                        last_line(&s, c),
+                        pct(1.0 - reach)
+                    )
+                });
+                view! {
+                    <div class="lt-row">
+                        <span>{label}": herkes desteden çekerse son taş "<b>{last.unwrap_or_default()}</b></span>
+                        {sim.map(|x| view! { <span class="muted">{x}</span> })}
+                    </div>
+                }
+            };
+            view! {
+                <div class="lasttile">
+                    <b>"Destenin son taşı kime gider?"</b>
+                    {take_ok.then(|| row("Yandan alırsan", take_last.clone(), take.as_ref()))}
+                    {row("Desteden çekersen", draw_last.clone(), draw.as_ref())}
+                </div>
+            }
+        });
+        view! {
+            <h2>{title}</h2>
+            <p class="sub">{sub}</p>
+            {bars}
+            {rule}
+            <span class="grow"></span>
+            <div class="actions"><div class="choices">
+                {side.filter(|_| take_ok).map(|t| view! {
+                    <button class="btn" class:go=best_take class:light=!best_take on:click=move |_| ctx.act(|s| s.apply(Decision::Take))>"Yandan aldım " {tile_view(t, okey)}</button>
+                })}
+                {deck.then(|| view! {
+                    <button class="btn" class:go=!best_take class:light=best_take on:click=move |_| ctx.act(|s| s.apply(Decision::Draw))>"Desteden çektim"</button>
+                })}
+            </div>
+            {(!deck && !take_ok).then(|| view! {
+                <button class="btn danger" on:click=move |_| ctx.act(|s| { s.deck_out(); Ok(()) })>"Deste bitti, el kapandı"</button>
+            })}
+            </div>
         }
     }
 }
 
+fn plan_title(steps: &[Step], s: &State) -> String {
+    let mut parts = Vec::new();
+    let melds: Vec<&Shape> = steps
+        .iter()
+        .filter_map(|x| {
+            if let Step::Meld { shape, owner: 0 } = x {
+                Some(shape)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let unopened = s.players[0].opened == Opened::No;
+    if !melds.is_empty() {
+        let pairs = melds.iter().all(|m| m.is_pair());
+        if unopened && pairs {
+            parts.push(format!("Çiftle aç ({})", melds.len()));
+        } else if unopened {
+            let total: i32 = melds.iter().map(|m| m.open_value(&s.rules)).sum();
+            parts.push(format!("Aç ({total})"));
+        } else {
+            parts.push(format!("{} per indir", melds.len()));
+        }
+    } else if unopened {
+        parts.push("Açma".into());
+    }
+    let lays: Vec<Tile> = steps
+        .iter()
+        .filter_map(|x| if let Step::Layoff { tile, .. } = x { Some(*tile) } else { None })
+        .collect();
+    match lays.len() {
+        0 => {}
+        1 => parts.push(format!(
+            "{} işle",
+            if lays[0] == JOKER { "okeyi".to_string() } else { name(lays[0]) }
+        )),
+        n => parts.push(format!("{n} taş işle")),
+    }
+    if steps.iter().any(|x| matches!(x, Step::Swap { .. })) {
+        parts.push("okey al".into());
+    }
+    if steps.iter().any(|x| matches!(x, Step::Meld { owner, .. } if *owner != 0)) {
+        parts.push("çift işle".into());
+    }
+    for x in steps {
+        if let Step::Discard { tile, finish } = x {
+            parts.push(if *finish {
+                format!("{} atıp bitir", name(*tile))
+            } else {
+                format!("{} at", name(*tile))
+            });
+        }
+    }
+    parts.join(" · ")
+}
+
 fn step_view(step: &Step, n: usize, okey: Option<Tile>, s: &State) -> impl IntoView + use<> {
-    let num = view! { <span class="n">{n}</span> };
+    let dot = |label: String, style: String| view! { <span class="dot num" style=style>{label}</span> };
+    let color_of = |n: usize| format!("background:{}", GROUP_COLORS[(n - 1) % GROUP_COLORS.len()]);
     match step.clone() {
         Step::Meld { shape, owner } => {
             let tiles = shape.tiles();
             let head = if shape.is_pair() {
-                if owner == 0 { "Çift indir".to_string() } else { format!("{} çiftlerine işle", SEAT_OWNER[owner as usize]) }
+                if owner == 0 { "çift".to_string() } else { format!("{} çiftlerine", SEAT_OWNER[owner as usize]) }
             } else {
-                format!("{} indir · {} puan", shape_label(&shape), shape.open_value(&s.rules))
+                format!("{} · {}", shape_label(&shape).to_lowercase(), shape.open_value(&s.rules))
             };
             let note = okey_note(&shape);
             view! {
-                <li>{num}<div><b>{head}</b><div class="meld">{tiles_view(&tiles, okey)}</div>{note.map(|n| view! { <small>{n}</small> })}</div></li>
-            }.into_any()
+                <li>{dot(n.to_string(), color_of(n))}<span class="row">{tiles_view(&tiles, okey)}</span><span class="what">{head}{note.map(|x| view! { <small>{x}</small> })}</span></li>
+            }
+            .into_any()
         }
         Step::Layoff { tile, owner, onto, side, stands_for } => {
             let whose = if owner == 0 { "kendi".to_string() } else { SEAT_OWNER[owner as usize].to_string() };
             let place = match side {
-                Side::Group => "perine ekle".to_string(),
-                side => format!("perinin {}", side_text(side).to_uppercase()),
+                Side::Group => "perine".to_string(),
+                side => format!("perinin {}", side_text(side)),
             };
             let note = (tile == JOKER && stands_for != JOKER).then(|| format!("okey = {}", name(stands_for)));
             view! {
-                <li>{num}<div>
-                    <b>"İşle: " {tile_view(tile, okey)} {format!(" → {whose} {place}")}</b>
-                    <div class="meld">{tiles_view(&onto, okey)}</div>
-                    {note.map(|n| view! { <small>{n}</small> })}
-                </div></li>
-            }.into_any()
+                <li>{dot(n.to_string(), "background:#fff;color:#111;box-shadow:inset 0 0 0 1.5px #111".into())}
+                    <span class="row">{tile_view(tile, okey)}</span>
+                    <span class="what">{format!("{whose} {place}")}<span class="row mini">{tiles_view(&onto, okey)}</span>{note.map(|x| view! { <small>{x}</small> })}</span>
+                </li>
+            }
+            .into_any()
         }
         Step::Swap { owner, onto, give, jokers } => {
             let foreign = owner != 0 && !(s.rules.partners && owner == 2);
-            let pen = foreign.then(|| format!(" · ona {} ceza yazılır", s.rules.okey_lost_penalty));
+            let pen = foreign.then(|| format!(" · ona {} ceza", s.rules.okey_lost_penalty));
             view! {
-                <li>{num}<div>
-                    <b>"Okey al: " {tiles_view(&give, okey)} {format!(" koy, {} perinden {} okey al", SEAT_OWNER[owner as usize], jokers)}{pen}</b>
-                    <div class="meld">{tiles_view(&onto, okey)}</div>
-                </div></li>
-            }.into_any()
+                <li>{dot(n.to_string(), "background:#c084fc".into())}
+                    <span class="row">{tiles_view(&give, okey)}</span>
+                    <span class="what">{format!("koy, {} perinden {} okey al{}", SEAT_OWNER[owner as usize], jokers, pen.unwrap_or_default())}<span class="row mini">{tiles_view(&onto, okey)}</span></span>
+                </li>
+            }
+            .into_any()
         }
         Step::Discard { tile, finish } => view! {
-            <li>{num}<div><b>{if finish { "Son taşı at: " } else { "At: " }} {tile_view(tile, okey)}{finish.then_some(" · el biter!")}</b></div></li>
-        }.into_any(),
+            <li>{dot("AT".into(), "background:#ef4444".into())}<span class="row">{tile_view(tile, okey)}</span><span class="what">{if finish { "at ve bitir" } else { "at" }}</span></li>
+        }
+        .into_any(),
     }
 }
 
@@ -789,206 +1331,156 @@ fn step_view(step: &Step, n: usize, okey: Option<Tile>, s: &State) -> impl IntoV
 fn Plan() -> impl IntoView {
     let ctx = expect_context::<Ctx>();
     let st = ctx.st;
-    let best = Memo::new(move |_| {
-        ctx.analysis.with(|a| {
-            a.as_ref()
-                .and_then(|r| r.report.as_ref())
-                .and_then(|r| r.candidates.first().map(|c| (c.decision, c.mv.clone())))
-        })
-    });
-    let chosen = Memo::new(move |_| ctx.pick.get().or(best.get()));
-    let steps = Memo::new(move |_| {
-        let (d, mv) = chosen.get()?;
-        let v = st.with(|s| s.view())?;
-        Some(match &mv {
-            Some(m) => describe_move(&v, m),
-            None => describe(&v, d),
-        })
-    });
-    view! {
-        <section class="card ask plan">
-            {move || {
-                let s = st.get();
-                let okey = okey_tile(&s);
-                let resp = ctx.analysis.get();
-                if let Some(Resp { error: Some(e), .. }) = &resp {
-                    return view! { <div class="msg">{e.clone()}</div> }.into_any();
+    move || {
+        let s = st.get();
+        let okey = okey_tile(&s);
+        let resp = ctx.analysis.get();
+        if let Some(Resp { error: Some(e), .. }) = &resp {
+            return view! { <div class="warn">{e.clone()}</div> }.into_any();
+        }
+        let Some((d, mv)) = ctx.chosen.get() else {
+            return view! {
+                <h2>"Sıra sende"</h2>
+                <p class="sub">"En iyi hamle hesaplanıyor…"</p>
+                <span class="grow"></span>
+                <button class="btn light" on:click=move |_| ctx.mode(Mode::Manual)>"Kendim gireceğim"</button>
+            }
+            .into_any();
+        };
+        let report = resp.as_ref().and_then(|r| r.report.clone());
+        let cand = report.as_ref().and_then(|r| find(r, d).cloned());
+        let is_best = ctx.best.get().is_some_and(|(b, _)| b == d);
+        let screening = report.as_ref().is_some_and(|r| r.screening);
+        let (settled, close) = match (&resp, &report) {
+            (Some(r), Some(rep)) => {
+                let mut alive = rep.candidates.iter().filter(|c| c.alive);
+                let top = alive.next();
+                let second = alive.next();
+                let apart = match (top, second) {
+                    (Some(t), Some(s)) => s.mean - t.mean > 2.0 * s.diff_se,
+                    _ => true,
+                };
+                (r.done || (apart && top.is_some_and(|t| t.n >= 300)), !apart)
+            }
+            _ => (false, false),
+        };
+        let state_note = if screening {
+            ("Bütün hamleler taranıyor, öneri değişebilir", "pending")
+        } else if !settled {
+            ("Hesap sürüyor, öneri değişebilir", "pending")
+        } else if close && is_best {
+            ("Kesinleşti · ilk iki seçenek neredeyse eşit", "done")
+        } else {
+            ("Kesinleşti", "done")
+        };
+        let steps = ctx.steps.get().unwrap_or_default();
+        let title = plan_title(&steps, &s);
+        let stats = cand.as_ref().map(|c| {
+            let aim = match c.p_win {
+                Some(w) => format!("Maçı kazanma {}", pct(w)),
+                None => advantage(c),
+            };
+            format!(
+                "{aim} · bitirme {} · sağdaki attığını alır {}",
+                pct(c.p_finish),
+                pct(c.p_next_takes)
+            )
+        });
+        let status = resp.as_ref().zip(report.as_ref()).map(|(r, rep)| {
+            let cut = if rep.truncated {
+                " · seçenek çok, bir kısmı incelenemedi"
+            } else {
+                ""
+            };
+            let ai = if rep.deep {
+                " · sonraki turun da hesapta"
+            } else if rep.model {
+                " · sonraki turlarını yapay zekâ oynuyor"
+            } else {
+                ""
+            };
+            format!("{} senaryo{}{cut}{ai}", rep.iterations, if r.done { "" } else { "…" })
+        });
+        let mut k = 0;
+        let list = steps
+            .iter()
+            .map(|x| {
+                if !matches!(x, Step::Discard { .. }) {
+                    k += 1;
                 }
-                let Some((d, mv)) = chosen.get() else {
-                    return view! { <h2>"Sıra sende"</h2><div class="hint">"En iyi hamle hesaplanıyor…"</div> }.into_any();
-                };
-                let report = resp.as_ref().and_then(|r| r.report.clone());
-                let cand = report.as_ref().and_then(|r| find(r, d).cloned());
-                let is_best = best.get().is_some_and(|(b, _)| b == d);
-                let screening = report.as_ref().is_some_and(|r| r.screening);
-                // Settled once the runner-up is clearly behind, or the search has run its course.
-                let (settled, close) = match (&resp, &report) {
-                    (Some(r), Some(rep)) => {
-                        let mut alive = rep.candidates.iter().filter(|c| c.alive);
-                        let top = alive.next();
-                        let second = alive.next();
-                        let apart = match (top, second) {
-                            (Some(t), Some(s)) => s.mean - t.mean > 2.0 * s.diff_se,
-                            _ => true,
-                        };
-                        (r.done || (apart && top.is_some_and(|t| t.n >= 300)), !apart)
-                    }
-                    _ => (false, false),
-                };
-                let caution = if screening {
-                    Some("Bütün hamleler taranıyor: öneri değişebilir.")
-                } else if !settled {
-                    Some("Henüz kesin değil: hesap sürüyor, öneri değişebilir.")
-                } else if close && is_best {
-                    Some("İlk iki seçenek neredeyse eşit; ikisi de olur.")
-                } else {
-                    None
-                };
-                let status = resp.as_ref().zip(report.as_ref()).map(|(r, rep)| {
-                    let moves = if rep.positions > 0 { format!("{} farklı indirme şekli, her biri için atılacak her taş · ", rep.positions) } else { String::new() };
-                    let cut = if rep.truncated { " · seçenek çok fazla, bir kısmı incelenemedi" } else { "" };
-                    let deep = if rep.deep {
-                        " · sonraki turun da hesaba katılıyor"
-                    } else if rep.model {
-                        " · sonraki turlarını yapay zekâ oynuyor"
-                    } else {
-                        ""
-                    };
-                    format!("{moves}{} senaryo{}{cut}{deep}", rep.iterations, if r.done { " · tamam" } else { " · netleşiyor…" })
-                });
-                let stats = cand.as_ref().map(|c| {
-                    let aim = match c.p_win {
-                        Some(w) => format!("Maçı kazanma ihtimali %{:.1}", w * 100.0),
-                        None => format!("Beklenen: rakiplerden {}", advantage(c)),
-                    };
-                    format!("{aim} · bitirme {:.0}% · sağdaki attığın taşı alır {:.0}%", c.p_finish * 100.0, c.p_next_takes * 100.0)
-                });
-                let list = steps.get().unwrap_or_default();
-                let none_to_lay = list.len() <= 1;
-                view! {
-                    <h2>{if is_best { "Öneri" } else { "Seçtiğin hamle" }}</h2>
-                    {caution.map(|c| view! { <div class="warn">{c}</div> })}
-                    <div class="hint">{stats}</div>
-                    <ol class="steps">
-                        {none_to_lay.then(|| view! { <li class="plain"><span class="n">"·"</span><div>"Per indirme, işleme yok."</div></li> })}
-                        {list.iter().enumerate().map(|(i, st)| step_view(st, i + 1, okey, &s)).collect_view()}
-                    </ol>
-                    <button class="primary big wide" on:click=move |_| ctx.act(|s| match &mv {
-                        Some(m) => s.apply_move(m),
-                        None => s.apply(d),
-                    })>"Yaptım ✓"</button>
-                    <div class="hint small">{status}</div>
-                }.into_any()
-            }}
-            <Alternatives/>
-            <button class="wide" on:click=move |_| ctx.mode(Mode::Manual)>"Başka bir şey yaptım / kendim gireceğim"</button>
-        </section>
-    }
-}
-
-#[component]
-fn Alternatives() -> impl IntoView {
-    let ctx = expect_context::<Ctx>();
-    view! {
-        <details class="alts">
-            <summary>"Diğer seçenekler"</summary>
-            {move || {
-                let Some(report) = ctx.analysis.get().and_then(|r| r.report) else { return ().into_any() };
-                let Some(top) = report.candidates.first().cloned() else { return ().into_any() };
-                let picked = ctx.pick.get().map_or(top.decision, |(d, _)| d);
-                report.candidates.iter().filter(|c| c.mv.is_some() || !matches!(c.decision, Decision::Play(_))).take(10).map(|c| {
-                    let d = c.decision;
-                    let mv = c.mv.clone();
-                    let behind = c.mean - top.mean;
-                    // Playing for the match the numbers are chances of losing, per mille.
-                    let note = match (c.p_win, top.p_win) {
-                        (Some(w), Some(best)) if best - w < 0.0005 => format!("kazanma %{:.1}", w * 100.0),
-                        (Some(w), Some(_)) => format!("kazanma %{:.1}{}", w * 100.0, if c.alive { "" } else { " · elendi" }),
-                        _ if behind < 0.05 => "en iyi".to_string(),
-                        _ if c.alive => format!("{behind:.1} geride (±{:.1})", c.diff_se),
-                        _ => format!("elendi · ~{behind:.0} geride"),
-                    };
-                    let note = format!("{note} · sağ alır {:.0}%", c.p_next_takes * 100.0);
-                    view! {
-                        <button class="alt" class:active=picked == d on:click=move |_| ctx.pick.set(Some((d, mv.clone())))>
-                            <span>{c.label.clone()}</span>
-                            <small>{note}</small>
-                        </button>
-                    }
-                }).collect_view().into_any()
-            }}
-        </details>
-    }
-}
-
-#[component]
-fn MyRack() -> impl IntoView {
-    let ctx = expect_context::<Ctx>();
-    let st = ctx.st;
-    view! {
-        <section class="card">
-            <h3>{move || st.with(|s| format!("Elim · {} taş", s.hand.len()))}</h3>
-            <div class="rack">
-                {move || {
-                    let s = st.get();
-                    let okey = okey_tile(&s);
-                    let active = s.turn == 0 && s.may_act();
-                    let mut used = if s.mode == Mode::Manual { s.buffer.clone() } else { vec![] };
-                    s.hand.iter().map(|&t| {
-                        let sel = used.iter().position(|&b| b == t).map(|i| used.remove(i)).is_some();
-                        view! {
-                            <button class="tbtn" class:sel=sel disabled=!active on:click=move |_| ctx.act(|s| {
-                                if s.mode != Mode::Manual {
-                                    s.buffer.clear();
-                                    s.mode = Mode::Manual;
-                                }
-                                if sel {
-                                    if let Some(i) = s.buffer.iter().rposition(|&b| b == t) { s.buffer.remove(i); }
-                                } else {
-                                    s.buffer.push(t);
-                                }
-                                Ok(())
-                            })>{tile_view(t, okey)}</button>
-                        }
-                    }).collect_view()
-                }}
+                step_view(x, k, okey, &s)
+            })
+            .collect_view();
+        let alts = report.clone().map(|r| alternatives(ctx, &r));
+        view! {
+            <h2>{if is_best { title } else { format!("Seçtiğin: {title}") }}</h2>
+            <p class="sub">{stats}</p>
+            <ol class="plan">{list}</ol>
+            <span class="grow"></span>
+            <div class="actions">
+                <div class=format!("state {}", state_note.1)>{state_note.0}" · "{status}</div>
+                <button class="btn go big" on:click=move |_| ctx.act(|s| match &mv {
+                    Some(m) => s.apply_move(m),
+                    None => s.apply(d),
+                })>"Yaptım"</button>
+                <button class="btn light" on:click=move |_| ctx.mode(Mode::Manual)>"Başka bir şey yaptım"</button>
             </div>
-        </section>
+            {alts}
+        }
+        .into_any()
     }
 }
 
-#[component]
-fn TableView() -> impl IntoView {
-    let ctx = expect_context::<Ctx>();
-    let st = ctx.st;
+fn short_label(label: &str, top: &str) -> String {
+    let top_parts: Vec<&str> = top.split(" · ").collect();
+    let parts: Vec<&str> = label.split(" · ").collect();
+    let mut out: Vec<String> = parts.iter().filter(|p| !top_parts.contains(p)).map(|p| p.to_string()).collect();
+    out.extend(top_parts.iter().filter(|p| !parts.contains(p)).map(|p| format!("{p} yok")));
+    if out.is_empty() { label.to_string() } else { out.join(" · ") }
+}
+
+fn alternatives(ctx: Ctx, report: &Report) -> impl IntoView + use<> {
+    let Some(top) = report.candidates.first().cloned() else {
+        return ().into_any();
+    };
+    let picked = ctx.pick.get().map_or(top.decision, |(d, _)| d);
+    let rows: Vec<CandReport> = report
+        .candidates
+        .iter()
+        .filter(|c| c.mv.is_some() || !matches!(c.decision, Decision::Play(_)))
+        .take(6)
+        .cloned()
+        .collect();
+    if rows.len() < 2 {
+        return ().into_any();
+    }
     view! {
-        <section class="card">
-            <h3>"Masa"</h3>
-            {move || {
-                let s = st.get();
-                if s.table.melds.is_empty() {
-                    return view! { <div class="muted">"Henüz açan yok."</div> }.into_any();
+        <div class="bars">
+            <span class="muted">"Seçenekler · dokun, adımlarını gör"</span>
+            {rows.into_iter().map(|c| {
+                let d = c.decision;
+                let mv = c.mv.clone();
+                let behind = c.mean - top.mean;
+                let width = (100.0 - behind * 2.0).clamp(6.0, 100.0);
+                let note = match (c.p_win, top.p_win) {
+                    (Some(w), Some(_)) => pct(w),
+                    _ if behind < 0.05 => "en iyi".to_string(),
+                    _ if c.alive => format!("−{behind:.1}"),
+                    _ => format!("−{behind:.0} · elendi"),
+                };
+                view! {
+                    <button class="bar-row alt" class:best={picked == d} on:click=move |_| ctx.pick.set(Some((d, mv.clone())))>
+                        <span class="lbl">{if c.decision == top.decision { "Önerilen".to_string() } else { short_label(&c.label, &top.label) }}</span>
+                        <span class="bar"><i style=format!("width:{width:.0}%")></i></span>
+                        <span class="note">{note}</span>
+                    </button>
                 }
-                let okey = okey_tile(&s);
-                (0..4u8).filter(|&o| s.table.melds.iter().any(|m| m.owner == o)).map(|o| {
-                    let melds: Vec<_> = s.table.melds.iter().enumerate().filter(|(_, m)| m.owner == o).map(|(i, m)| (i, m.clone(), s.meld_tappable(i))).collect();
-                    view! {
-                        <div class="owner">
-                            <div class="muted small">{SEAT_NAMES[o as usize]}</div>
-                            {melds.into_iter().map(|(i, m, tap)| view! {
-                                <button class="meld mbtn" class:tap=tap disabled=!tap on:click=move |_| ctx.act(|s| { s.buffer.clear(); s.mode = Mode::MeldMenu(i); Ok(()) })>
-                                    {tiles_view(&m.shape.tiles(), okey)}
-                                </button>
-                            }).collect_view()}
-                        </div>
-                    }
-                }).collect_view().into_any()
-            }}
-        </section>
+            }).collect_view()}
+        </div>
     }
+    .into_any()
 }
 
-/// The match situation: which hand this is and how far behind I am. Entered by hand; optional.
 #[component]
 fn MatchBox() -> impl IntoView {
     let ctx = expect_context::<Ctx>();
@@ -997,7 +1489,7 @@ fn MatchBox() -> impl IntoView {
         view! {
             <label class="opt num">
                 <span>{label}</span>
-                <input type="number"
+                <input type="number" inputmode="numeric"
                     prop:value=move || st.with(|s| get(s).to_string())
                     on:change=move |ev| {
                         if let Ok(v) = event_target_value(&ev).trim().parse::<i32>() {
@@ -1009,15 +1501,7 @@ fn MatchBox() -> impl IntoView {
         }
     };
     view! {
-        <details class="card matchbox">
-            <summary>
-                {move || st.with(|s| if s.match_on {
-                    let left = s.hands_total.saturating_sub(s.hand_no);
-                    format!("Maç durumu · {}. el / {} · {}", s.hand_no, s.hands_total, if left == 0 { "son el".to_string() } else { format!("{left} el kaldı") })
-                } else {
-                    "Maç durumu · kapalı (sadece bu ele göre oynuyor)".to_string()
-                })}
-            </summary>
+        <div class="matchform">
             <label class="opt">
                 <input type="checkbox"
                     prop:checked=move || st.with(|s| s.match_on)
@@ -1025,7 +1509,7 @@ fn MatchBox() -> impl IntoView {
                 />
                 "Maçı kazanma ihtimaline göre oyna"
             </label>
-            <div class="hint">"Gerideyken risk alır, öndeyken garantiye oynar. Öndeysen puanı eksi yaz."</div>
+            <p class="muted">"Gerideyken risk alır, öndeyken garantiye oynar. Öndeysen puanı eksi yaz."</p>
             {number("Kaçıncı eldeyiz", |s| s.hand_no as i32, |s, v| s.hand_no = v.clamp(1, 99) as u8)}
             {number("Toplam kaç el", |s| s.hands_total as i32, |s, v| s.hands_total = v.clamp(1, 99) as u8)}
             {move || if st.with(|s| s.rules.partners) {
@@ -1037,36 +1521,29 @@ fn MatchBox() -> impl IntoView {
                     {number("Soldakinden kaç puan gerideyim", |s| s.behind[2], |s, v| s.behind[2] = v)}
                 }.into_any()
             }}
-        </details>
+        </div>
     }
 }
 
 #[component]
-fn Details() -> impl IntoView {
+fn Info() -> impl IntoView {
     view! {
-        <details class="card">
-            <summary>"Atılan taşlar"</summary>
-            <Discards/>
-        </details>
-        <details class="card">
-            <summary>"Elimin durumu · işime yarayacak taşlar"</summary>
-            <HandInfo/>
-        </details>
-        <details class="card">
-            <summary>"Görülmemiş taşlar"</summary>
-            <Unseen/>
-        </details>
+        <h3>"Atılan taşlar"</h3>
+        <Discards/>
+        <h3>"Elimin durumu"</h3>
+        <HandInfo/>
+        <h3>"Görülmemiş taşlar"</h3>
+        <Unseen/>
         <CopyState/>
     }
 }
 
-/// Copies the whole position as text so a questionable recommendation can be reproduced exactly.
 #[component]
 fn CopyState() -> impl IntoView {
     let ctx = expect_context::<Ctx>();
     let copied = RwSignal::new(false);
     view! {
-        <button class="wide" on:click=move |_| {
+        <button class="btn light wide" on:click=move |_| {
             if let (Some(w), Ok(j)) = (web_sys::window(), serde_json::to_string(&ctx.st.get_untracked())) {
                 let _ = w.navigator().clipboard().write_text(&j);
                 copied.set(true);
@@ -1084,19 +1561,14 @@ fn Discards() -> impl IntoView {
     move || {
         let s = st.get();
         let okey = okey_tile(&s);
-        (0..4usize)
+        (0..4u8)
             .map(|p| {
-                let pv = &s.players[p];
-                let known = (!pv.known.is_empty()).then(|| {
-                    view! {
-                        <span class="muted small">" elinde: "</span>
-                        {tiles_view(&pv.known, okey)}
-                    }
-                });
+                let pv = &s.players[p as usize];
+                let known = (!pv.known.is_empty()).then(|| view! { <span class="muted">" elinde: "</span> {tiles_view(&pv.known, okey)} });
                 view! {
                     <div class="disc-row">
-                        <span class="seatname">{SEAT_NAMES[p]}</span>
-                        <span class="disc">{tiles_view(&pv.discards, okey)}</span>
+                        <span class="seatname">{seat_name(&s, p)}</span>
+                        <span class="row wrap">{tiles_view(&pv.discards, okey)}</span>
                         {known}
                     </div>
                 }
@@ -1121,13 +1593,13 @@ fn HandInfo() -> impl IntoView {
             };
             view! {
                 <div>{head}</div>
-                <div class="rack">
-                    {r.melds.iter().map(|m| view! { <span class="meld">{tiles_view(m, okey)}</span> }).collect_view()}
+                <div class="row wrap">
+                    {r.melds.iter().map(|m| view! { <span class="grp">{tiles_view(m, okey)}</span> }).collect_view()}
                 </div>
-                <div class="muted small">"Taş × görülmemiş adet → gelirse açış değerin / çift sayın"</div>
+                <p class="muted">"Taş × görülmemiş adet → gelirse açış değerin / çift sayın"</p>
                 <div class="outs">
                     {r.outs.iter().take(16).map(|o| view! {
-                        <span class="out">{tile_view(o.tile, okey)}<span class="small">{format!("×{} → {} / {}ç", o.unseen, o.open_value, o.pairs)}</span></span>
+                        <span class="out">{tile_view(o.tile, okey)}<small>{format!("×{} → {} / {}ç", o.unseen, o.open_value, o.pairs)}</small></span>
                     }).collect_view()}
                 </div>
             }
@@ -1145,54 +1617,12 @@ fn Unseen() -> impl IntoView {
         let okey = okey_tile(&s);
         let left = |t: Tile| 2u8.saturating_sub(seen[t as usize]);
         let total: u32 = (0..NIDS).map(|i| left(i as Tile) as u32).sum();
+        let cell = |t: Tile| view! { <span class="ucell" class:none={left(t) == 0}>{tile_view(t, okey)}<sub>{left(t)}</sub></span> };
         view! {
-            <div class="muted small">{format!("Toplam {total} taş (rakiplerin eli + deste)")}</div>
-            <table class="grid">
-                {(0..4u8).map(|c| view! {
-                    <tr>
-                        {(1..=13u8).map(|n| {
-                            let t = id(c, n);
-                            view! { <td class=format!("u{}", left(t))>{tile_view(t, okey)}<sub>{left(t)}</sub></td> }
-                        }).collect_view()}
-                    </tr>
-                }).collect_view()}
-                <tr><td class=format!("u{}", left(JOKER))>{tile_view(JOKER, okey)}<sub>{left(JOKER)}</sub></td></tr>
-            </table>
+            <p class="muted">{format!("Toplam {total} taş (rakiplerin eli + deste)")}</p>
+            <div class="ugrid">
+                {(0..4u8).map(|c| view! { {(1..=13u8).map(|n| cell(id(c, n))).collect_view()} {if c == 0 { cell(JOKER).into_any() } else { view! { <span></span> }.into_any() }} }).collect_view()}
+            </div>
         }
-    }
-}
-
-#[component]
-fn Keyboard() -> impl IntoView {
-    let ctx = expect_context::<Ctx>();
-    let st = ctx.st;
-    let color_sel = ctx.color;
-    view! {
-        <nav class="kbd">
-            <div class="colors">
-                {(0..4u8).map(|c| view! {
-                    <button class=format!("cbtn c{c}") class:active=move || color_sel.get() == c on:click=move |_| color_sel.set(c)>
-                        {COLOR_NAMES[c as usize]}
-                    </button>
-                }).collect_view()}
-            </div>
-            <div class="nums">
-                {(1..=14u8).map(|n| {
-                    let tile = move || if n == 14 { JOKER } else { id(color_sel.get(), n) };
-                    let off = move || st.with(|s| !s.key_enabled(tile()));
-                    view! {
-                        <button
-                            class=move || if n == 14 { "key joker".to_string() } else { format!("key c{}", color_sel.get()) }
-                            class:gone=off
-                            disabled=off
-                            on:click=move |_| ctx.act(|s| s.key(tile()))
-                        >
-                            {if n == 14 { "OKEY".to_string() } else { n.to_string() }}
-                            {move || st.with(|s| (n != 14 && okey_tile(s) == Some(tile())).then(|| view! { <small>"sahte"</small> }))}
-                        </button>
-                    }
-                }).collect_view()}
-            </div>
-        </nav>
     }
 }
