@@ -757,6 +757,14 @@ impl Game {
             }
         }
         let next_unopened = self.players[((p + 1) % 4) as usize].opened == Opened::No;
+        let mut frees_okey = [false; NIDS];
+        if self.rules.joker_retrieve {
+            for slot in self.table.joker_slots(&self.rules) {
+                if let [t] = slot.tiles[..] {
+                    frees_okey[t as usize] = true;
+                }
+            }
+        }
         let unseen = |u: Tile| (2 - self.seen[u as usize] as i32 - hand[u as usize] as i32).max(0) as f32;
         let mut out = Vec::new();
         for t in 0..NIDS as Tile {
@@ -803,6 +811,9 @@ impl Game {
             };
             if next_unopened {
                 keep += pol.w_danger * live * n as f32 / 13.0;
+            }
+            if frees_okey[t as usize] {
+                keep += 2000.0;
             }
             out.push((t, (keep * 10.0) as i32 + self.discard_penalty(p, t) * 1000));
         }
