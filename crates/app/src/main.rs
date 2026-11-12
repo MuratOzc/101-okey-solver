@@ -366,10 +366,8 @@ fn App() -> impl IntoView {
             <Show when=move || ctx.show_settings.get()>
                 <Modal title="Ayarlar" open=ctx.show_settings>
                     <settings::Basics/>
-                    <details class="matchbox" open=move || st.with(|s| s.match_on)>
-                        <summary>"Maç durumu"</summary>
-                        <MatchBox/>
-                    </details>
+                    <h3>"Maç"</h3>
+                    <MatchBox/>
                     <settings::Advanced/>
                 </Modal>
             </Show>
@@ -415,8 +413,8 @@ fn TopBar() -> impl IntoView {
                     Stage::Play => None,
                 }
                 .map(|t| view! { <span class="chip">{t}</span> });
-                let game = s.match_on.then(|| view! {
-                    <button class="chip link" on:click=move |_| ctx.show_settings.set(true)>{format!("Maç {}/{}", s.hand_no, s.hands_total)}</button>
+                let game = (s.stage != Stage::Setup).then(|| view! {
+                    <button class="chip link" on:click=move |_| ctx.show_settings.set(true)>{format!("El {}/{}", s.hand_no, s.hands_total)}{standing_short(&s)}</button>
                 });
                 view! { {head} {deck} {gost} {game} }
             }}
@@ -850,10 +848,7 @@ fn setup_panel(ctx: Ctx, s: &State) -> impl IntoView + use<> {
                 {steps}
                 <div class="progress"><i style=format!("width:{}%", have * 100 / need.max(1))></i></div>
                 <span class="grow"></span>
-                <details class="matchbox inline">
-                    <summary>{match_line(s)}</summary>
-                    <MatchBox/>
-                </details>
+                <p class="muted">{match_line(s)}</p>
                 <div class="actions">
                     <button class="btn big" class:go=full class:light=!full disabled=!full on:click=move |_| ctx.act(|s| s.start())>
                         {if full { "Başla".to_string() } else { format!("Başla ({} taş kaldı)", need - have) }}
@@ -865,39 +860,124 @@ fn setup_panel(ctx: Ctx, s: &State) -> impl IntoView + use<> {
     }
 }
 
-fn match_line(s: &State) -> String {
-    if s.match_on {
-        let left = s.hands_total.saturating_sub(s.hand_no);
-        format!(
-            "Maç: {}. el / {} · {}",
-            s.hand_no,
-            s.hands_total,
-            if left == 0 {
-                "son el".to_string()
-            } else {
-                format!("{left} el kaldı")
-            }
-        )
+fn standing(s: &State) -> Option<String> {
+    if s.history.is_empty() && s.totals == [0; 4] {
+        return None;
+    }
+    let lead = s.lead();
+    Some(if s.rules.partners {
+        match lead[0] {
+            x if x > 0 => format!("takım olarak {x} puan öndeyiz"),
+            x if x < 0 => format!("takım olarak {} puan gerideyiz", -x),
+            _ => "takımlar eşit".into(),
+        }
     } else {
-        "Maç durumu: kapalı (sadece bu ele göre oynar)".into()
+        let worst = *lead.iter().min().unwrap();
+        if worst > 0 {
+            format!("en yakın rakipten {worst} puan öndesin")
+        } else if worst < 0 {
+            format!("lidere {} puan geridesin", -worst)
+        } else {
+            "liderle eşitsin".into()
+        }
+    })
+}
+
+fn standing_short(s: &State) -> String {
+    if s.history.is_empty() && s.totals == [0; 4] {
+        return String::new();
+    }
+    let lead = s.lead();
+    let x = if s.rules.partners { lead[0] } else { *lead.iter().min().unwrap() };
+    if x >= 0 { format!(" · +{x}") } else { format!(" · −{}", -x) }
+}
+
+fn match_line(s: &State) -> String {
+    let left = s.hands_total.saturating_sub(s.hand_no);
+    let when = if left == 0 {
+        "son el".to_string()
+    } else {
+        format!("{left} el kaldı")
+    };
+    match standing(s) {
+        Some(x) => format!("{}. el / {} · {when} · {x}", s.hand_no, s.hands_total),
+        None => format!("{}. el / {} · {when}", s.hand_no, s.hands_total),
     }
 }
 
 fn over_panel(ctx: Ctx, s: &State) -> impl IntoView + use<> {
-    let next = if s.match_on {
-        format!("Yeni el ({} / {})", (s.hand_no + 1).min(s.hands_total), s.hands_total)
-    } else {
-        "Yeni el".into()
-    };
+    let next = format!("Yeni el ({} / {})", (s.hand_no + 1).min(s.hands_total), s.hands_total);
+    let scores = s.hand_scores();
+    let mult_note = s.finisher.map(|f| {
+        let fin = seat_name(s, f);
+        view! {
+            <div class="mults">
+                <span class="muted">{format!("{fin} nasıl bitti?")}</span>
+                <label class="opt"><input type="checkbox" prop:checked=s.fin_okey
+                    on:change=move |ev| { let v = event_target_checked(&ev); ctx.act(|s| { s.fin_okey = v; Ok(()) }) }/>"Okey atarak"</label>
+                <label class="opt"><input type="checkbox" prop:checked=s.fin_elden
+                    on:change=move |ev| { let v = event_target_checked(&ev); ctx.act(|s| { s.fin_elden = v; Ok(()) }) }/>"Elden"</label>
+            </div>
+        }
+    });
+    let rows = (0..4u8).map(|p| {
+        let pv = &s.players[p as usize];
+        let finished = s.finisher.is_some_and(|f| f == p || (s.rules.partners && (f + 2) % 4 == p));
+        let score = scores.map(|x| x[p as usize].to_string()).unwrap_or_else(|| "?".into());
+        let pen = s.penalties[p as usize];
+        let what = if finished {
+            view! { <span>{if s.finisher == Some(p) { "bitirdi" } else { "eşi bitirdi" }}</span> }.into_any()
+        } else if p == 0 {
+            view! { <span>{match pv.opened { Opened::No => "açmadın", Opened::Melds => "elinde kalan", Opened::Pairs => "elinde kalan ×2" }}</span> }.into_any()
+        } else if pv.opened == Opened::No {
+            let n = s.okeys_left[p as usize];
+            view! {
+                <span>"açmadı"</span>
+                <button class="mini" on:click=move |_| ctx.act(|s| { s.okeys_left[p as usize] = (n + 1) % 3; Ok(()) })>
+                    {if n == 0 { "+ okey".to_string() } else { format!("okey ×{n}") }}
+                </button>
+            }.into_any()
+        } else {
+            let pairs = pv.opened == Opened::Pairs;
+            let val = s.left[p as usize].map(|v| v.to_string()).unwrap_or_default();
+            view! {
+                <input type="number" inputmode="numeric" placeholder="elinde kalan" prop:value=val
+                    on:change=move |ev| {
+                        let v = event_target_value(&ev).trim().parse::<i32>().ok();
+                        ctx.act(|s| { s.left[p as usize] = v; Ok(()) })
+                    }/>
+                {pairs.then_some(" ×2")}
+            }.into_any()
+        };
+        view! {
+            <div class="score-row">
+                <b>{seat_name(s, p)}</b>
+                <span class="what">{what}</span>
+                <span class="pen">{(pen != 0).then(|| format!("ceza {pen:+}"))}</span>
+                <b class="num">{score}</b>
+            </div>
+        }
+    }).collect_view();
+    let after = scores.map(|sc| {
+        let mut t = s.totals;
+        for (x, y) in t.iter_mut().zip(sc) {
+            *x += y;
+        }
+        let names: Vec<String> = (0..4u8).map(|p| format!("{} {}", seat_name(s, p), t[p as usize])).collect();
+        view! { <p class="muted">{format!("Maç toplamı bu elden sonra: {}", names.join(" · "))}</p> }
+    });
+    let ready = scores.is_some();
     view! {
         <h2>{s.result.clone().unwrap_or_default()}</h2>
-        <p class="sub">"Puanları yazdıysan maç durumunu güncelle."</p>
-        <details class="matchbox inline" open=s.match_on>
-            <summary>{match_line(s)}</summary>
-            <MatchBox/>
-        </details>
+        <p class="sub">{if ready { "Puanlar hazır." } else { "Açan rakiplerin elinde kalan puanı yaz." }}</p>
+        {mult_note}
+        <div class="score-table">{rows}</div>
+        {after}
         <span class="grow"></span>
-        <button class="btn go big" on:click=move |_| ctx.act(|s| { *s = s.new_hand(); Ok(()) })>{next}</button>
+        <div class="actions">
+            <button class="btn go big" disabled=!ready on:click=move |_| ctx.act(|s| { *s = s.new_hand(); Ok(()) })>{next.clone()}</button>
+            {(!ready).then(|| view! { <button class="btn light" on:click=move |_| ctx.act(|s| { *s = s.new_hand(); Ok(()) })>"Puan yazmadan geç"</button> })}
+        </div>
     }
 }
 
@@ -1501,7 +1581,7 @@ fn alternatives(ctx: Ctx, report: &Report) -> impl IntoView + use<> {
 fn MatchBox() -> impl IntoView {
     let ctx = expect_context::<Ctx>();
     let st = ctx.st;
-    let number = move |label: &'static str, get: fn(&State) -> i32, set: fn(&mut State, i32)| {
+    let number = move |label: String, get: Box<dyn Fn(&State) -> i32 + Send + Sync>, set: fn(&mut State, i32)| {
         view! {
             <label class="opt num">
                 <span>{label}</span>
@@ -1518,25 +1598,18 @@ fn MatchBox() -> impl IntoView {
     };
     view! {
         <div class="matchform">
-            <label class="opt">
-                <input type="checkbox"
-                    prop:checked=move || st.with(|s| s.match_on)
-                    on:change=move |ev| { let v = event_target_checked(&ev); ctx.act(|s| { s.match_on = v; Ok(()) }) }
-                />
-                "Maçı kazanma ihtimaline göre oyna"
-            </label>
-            <p class="muted">"Gerideyken risk alır, öndeyken garantiye oynar. Öndeysen puanı eksi yaz."</p>
-            {number("Kaçıncı eldeyiz", |s| s.hand_no as i32, |s, v| s.hand_no = v.clamp(1, 99) as u8)}
-            {number("Toplam kaç el", |s| s.hands_total as i32, |s, v| s.hands_total = v.clamp(1, 99) as u8)}
-            {move || if st.with(|s| s.rules.partners) {
-                number("Takım olarak kaç puan gerideyiz", |s| s.behind[0], |s, v| s.behind[0] = v).into_any()
-            } else {
-                view! {
-                    {number("Sağdakinden kaç puan gerideyim", |s| s.behind[0], |s, v| s.behind[0] = v)}
-                    {number("Karşıdakinden kaç puan gerideyim", |s| s.behind[1], |s, v| s.behind[1] = v)}
-                    {number("Soldakinden kaç puan gerideyim", |s| s.behind[2], |s, v| s.behind[2] = v)}
-                }.into_any()
-            }}
+            <p class="muted">{move || st.with(match_line)}</p>
+            {number("Kaçıncı eldeyiz".into(), Box::new(|s| s.hand_no as i32), |s, v| s.hand_no = v.clamp(1, 99) as u8)}
+            {number("Maç kaç el".into(), Box::new(|s| s.hands_total as i32), |s, v| s.hands_total = v.clamp(1, 99) as u8)}
+            <details>
+                <summary>"Puan tablosunu düzelt"</summary>
+                {number("Ben".into(), Box::new(|s| s.totals[0]), |s, v| s.totals[0] = v)}
+                {number("Sağ".into(), Box::new(|s| s.totals[1]), |s, v| s.totals[1] = v)}
+                {number("Karşı".into(), Box::new(|s| s.totals[2]), |s, v| s.totals[2] = v)}
+                {number("Sol".into(), Box::new(|s| s.totals[3]), |s, v| s.totals[3] = v)}
+                <button class="btn light danger wide" on:click=move |_| ctx.act(|s| { *s = s.new_match(); Ok(()) })>"Yeni maç başlat (puanları sıfırla)"</button>
+            </details>
+            <p class="muted">"Maç boyunca farkı açmaya oynar. Son iki elde puan tablosuna bakıp maçı kazanmaya oynar: gerideyken risk alır, öndeyken garantiye oynar."</p>
         </div>
     }
 }

@@ -12,7 +12,7 @@ Açayım mı, ne atayım, yandan alayım mı? 101 Okey'de her turun sorusuna, ol
 
 **Eşli oyun.** Takım puanına göre oynar; son taşı ortağına kaydırmak gibi hamleleri hesaba katar.
 
-**Maç bilinci.** Kaçıncı elde ve kaç puan geride olduğunu girersen gerideyken risk alır, öndeyken garantiye oynar.
+**Maç bilinci.** El sonlarında puanı kendisi tutar; maçın son ellerinde gerideyken risk alır, öndeyken garantiye oynar.
 
 **Senin masanın kuralları.** Katlamalı, açma eşikleri, cezalar ve katlar ayarlanır.
 

@@ -1,6 +1,6 @@
 use okey_engine::analysis::{Decision, Phase, PlayerView, View};
 use okey_engine::game::{Opened, Outcome};
-use okey_engine::meld::{Shape, Solver};
+use okey_engine::meld::{Shape, Solver, hand_penalty};
 use okey_engine::moves::Move;
 use okey_engine::rng::Rng;
 use okey_engine::rules::Rules;
@@ -56,13 +56,17 @@ pub struct State {
     pub mode: Mode,
     pub result: Option<String>,
     pub model: bool,
-    /// Play for the match (chance of ending on top) instead of for this hand's points.
-    pub match_on: bool,
     pub hand_no: u8,
     pub hands_total: u8,
-    /// Points I trail the player on my right, across, on my left (negative when ahead).
-    /// With partners only the first is used, for the two teams.
-    pub behind: [i32; 3],
+    pub totals: [i32; 4],
+    pub history: Vec<[i32; 4]>,
+    pub penalties: [i32; 4],
+    pub big_pairs_paid: bool,
+    pub finisher: Option<u8>,
+    pub fin_okey: bool,
+    pub fin_elden: bool,
+    pub left: [Option<i32>; 4],
+    pub okeys_left: [u8; 4],
 }
 
 impl Default for State {
@@ -85,15 +89,25 @@ impl Default for State {
             mode: Mode::Gosterge,
             result: None,
             model: true,
-            match_on: false,
             hand_no: 1,
             hands_total: 11,
-            behind: [0; 3],
+            totals: [0; 4],
+            history: vec![],
+            penalties: [0; 4],
+            big_pairs_paid: false,
+            finisher: None,
+            fin_okey: false,
+            fin_elden: false,
+            left: [None; 4],
+            okeys_left: [0; 4],
         }
     }
 }
 
 type R = Result<(), String>;
+
+// The comeback measurements showed a gain from playing for the match only in the last hands.
+const MATCH_HANDS: u8 = 2;
 
 fn remove_one(v: &mut Vec<Tile>, t: Tile) -> bool {
     match v.iter().position(|&x| x == t) {
@@ -107,15 +121,86 @@ fn remove_one(v: &mut Vec<Tile>, t: Tile) -> bool {
 
 impl State {
     pub fn new_hand(&self) -> State {
+        let mut totals = self.totals;
+        let mut history = self.history.clone();
+        if let Some(sc) = self.hand_scores() {
+            for (t, x) in totals.iter_mut().zip(sc) {
+                *t += x;
+            }
+            history.push(sc);
+        }
         State {
             rules: self.rules.clone(),
             starter: (self.starter + 1) % 4,
-            match_on: self.match_on,
             model: self.model,
             hand_no: (self.hand_no + 1).min(self.hands_total),
             hands_total: self.hands_total,
-            behind: self.behind,
+            totals,
+            history,
             ..State::default()
+        }
+    }
+
+    pub fn new_match(&self) -> State {
+        State {
+            rules: self.rules.clone(),
+            model: self.model,
+            hands_total: self.hands_total,
+            ..State::default()
+        }
+    }
+
+    /// None until every opened opponent's leftover points are entered.
+    pub fn hand_scores(&self) -> Option<[i32; 4]> {
+        if self.stage != Stage::Over {
+            return None;
+        }
+        let r = &self.rules;
+        let mult = self.finisher.map_or(1, |f| {
+            let mut m = 1;
+            if self.fin_okey {
+                m *= r.mult_okey_finish;
+            }
+            if self.fin_elden {
+                m *= r.mult_elden;
+            }
+            if self.players[f as usize].opened == Opened::Pairs {
+                m *= r.mult_pair_finish;
+            }
+            m
+        });
+        let mut out = [0; 4];
+        for p in 0..4u8 {
+            let finished = self.finisher.is_some_and(|f| f == p || (r.partners && (f + 2) % 4 == p));
+            let pv = &self.players[p as usize];
+            let base = if finished {
+                r.score_finish
+            } else if p == 0 {
+                let c = counts_from(&self.hand);
+                match pv.opened {
+                    Opened::No => r.score_unopened + c[JOKER as usize] as i32 * r.joker_in_hand,
+                    Opened::Melds => hand_penalty(&c, r),
+                    Opened::Pairs => hand_penalty(&c, r) * r.pair_hand_mult,
+                }
+            } else {
+                match pv.opened {
+                    Opened::No => r.score_unopened + self.okeys_left[p as usize] as i32 * r.joker_in_hand,
+                    Opened::Melds => self.left[p as usize]?,
+                    Opened::Pairs => self.left[p as usize]? * r.pair_hand_mult,
+                }
+            };
+            out[p as usize] = base * mult + self.penalties[p as usize];
+        }
+        Some(out)
+    }
+
+    /// Positive: I am ahead of that opponent (or, with partners, our team of theirs).
+    pub fn lead(&self) -> [i32; 3] {
+        let t = self.totals;
+        if self.rules.partners {
+            [(t[1] + t[3]) - (t[0] + t[2]); 3]
+        } else {
+            [t[1] - t[0], t[2] - t[0], t[3] - t[0]]
         }
     }
 
@@ -335,6 +420,15 @@ impl State {
             return Err("Önce taş çekilmeli (desteden ya da yandan)".into());
         }
         let finishing = p == 0 && self.hand.len() == 1;
+        let pen = if finishing {
+            0
+        } else if t == JOKER {
+            self.rules.penalty_discard_joker
+        } else if (self.cur().opened != Opened::No || self.rules.islek_applies_unopened) && self.table.is_islek(t, &self.rules) {
+            self.rules.penalty_islek
+        } else {
+            0
+        };
         if !self.opening_complete() && !finishing {
             let progress = self.opening_progress().unwrap_or_default();
             return Err(format!(
@@ -354,12 +448,23 @@ impl State {
             remove_one(&mut pv.known, t);
             pv.hand_len = Some(pv.hand_len.unwrap_or(22).saturating_sub(1));
         }
+        self.penalties[p as usize] += pen;
         self.players[p as usize].discards.push(t);
         self.next_turn();
         Ok(())
     }
 
     fn next_turn(&mut self) {
+        let pv = self.cur();
+        if self.opened_this_turn
+            && !self.big_pairs_paid
+            && pv.opened == Opened::Pairs
+            && self.rules.big_pairs_penalty != 0
+            && pv.open_value >= self.rules.big_pairs_min as i32
+        {
+            self.penalties[self.turn as usize] -= self.rules.big_pairs_penalty;
+        }
+        self.big_pairs_paid = false;
         self.turn = (self.turn + 1) % 4;
         self.drawn = false;
         self.taken = None;
@@ -543,6 +648,10 @@ impl State {
         }
         let tiles = slot.tiles.clone();
         self.spend(&tiles)?;
+        let owner = self.table.melds[slot.meld].owner;
+        if owner != self.turn && !(self.rules.partners && owner == (self.turn + 2) % 4) {
+            self.penalties[owner as usize] += self.rules.okey_lost_penalty;
+        }
         self.table.swap_joker(slot);
         for _ in 0..slot.jokers {
             if self.turn == 0 {
@@ -594,6 +703,8 @@ impl State {
             self.players[p as usize].discards.push(t);
         }
         self.result = Some(format!("{} bitirdi", SEAT_NAMES[p as usize]));
+        self.finisher = Some(p);
+        self.fin_okey = last == Some(JOKER);
         self.stage = Stage::Over;
         self.mode = Mode::Idle;
     }
@@ -604,10 +715,14 @@ impl State {
         self.mode = Mode::Idle;
     }
 
+    pub fn match_decides(&self) -> bool {
+        self.hands_total.saturating_sub(self.hand_no) < MATCH_HANDS && !(self.history.is_empty() && self.totals == [0; 4])
+    }
+
     pub fn stakes(&self) -> Option<Stakes> {
-        self.match_on.then(|| Stakes {
+        self.match_decides().then(|| Stakes {
             hands_left: self.hands_total.saturating_sub(self.hand_no),
-            behind: if self.rules.partners { [self.behind[0]; 3] } else { self.behind },
+            behind: self.lead().map(|x| -x),
         })
     }
 
@@ -654,6 +769,10 @@ impl State {
         if was_unopened && g.players[0].opened != Opened::No {
             self.players[0].open_value = laid;
         }
+        for (mine, sim) in self.penalties.iter_mut().zip(&g.players) {
+            *mine += sim.penalty;
+        }
+        self.big_pairs_paid = true;
         self.taken = None;
         self.buffer.clear();
         self.mode = Mode::Idle;
@@ -661,6 +780,8 @@ impl State {
             Some(Outcome::Finished(f)) => {
                 self.hand.push(f.last);
                 self.finish(0, Some(f.last));
+                self.fin_okey = f.okey;
+                self.fin_elden = f.elden;
             }
             Some(Outcome::DeckOut) => self.deck_out(),
             None => {
@@ -702,6 +823,10 @@ impl State {
                     self.players[0].open_value = laid;
                     self.opened_this_turn = true;
                 }
+                for (mine, sim) in self.penalties.iter_mut().zip(&g.players) {
+                    *mine += sim.penalty;
+                }
+                self.big_pairs_paid = true;
                 self.taken = None;
                 self.buffer.clear();
                 self.mode = Mode::Idle;
@@ -709,6 +834,8 @@ impl State {
                     Some(Outcome::Finished(f)) => {
                         self.hand.push(f.last);
                         self.finish(0, Some(f.last));
+                        self.fin_okey = f.okey;
+                        self.fin_elden = f.elden;
                         Ok(())
                     }
                     Some(Outcome::DeckOut) => {
@@ -876,16 +1003,25 @@ mod tests {
     fn match_situation_reaches_the_analysis_and_carries_to_the_next_hand() {
         let mut s = started();
         assert!(s.view().unwrap().stakes.is_none());
-        s.match_on = true;
         s.hand_no = 10;
-        s.behind = [250, 40, -30];
+        assert!(
+            s.view().unwrap().stakes.is_none(),
+            "no scores kept, so nothing to play the match for"
+        );
+        s.totals = [300, 50, 260, 330];
         let st = s.view().unwrap().stakes.unwrap();
         assert_eq!((st.hands_left, st.behind), (1, [250, 40, -30]));
+        s.hand_no = 9;
+        assert!(
+            s.view().unwrap().stakes.is_none(),
+            "three hands from the end the score gap still decides"
+        );
+        s.hand_no = 10;
         let next = s.new_hand();
-        assert_eq!((next.match_on, next.hand_no, next.behind), (true, 11, [250, 40, -30]));
+        assert_eq!((next.hand_no, next.totals), (11, [300, 50, 260, 330]));
         assert_eq!(next.new_hand().hand_no, 11, "the hand number stops at the last hand");
         s.rules.partners = true;
-        assert_eq!(s.view().unwrap().stakes.unwrap().behind, [250; 3]);
+        assert_eq!(s.view().unwrap().stakes.unwrap().behind, [180; 3]);
     }
 
     #[test]
@@ -906,6 +1042,44 @@ mod tests {
         s.opp_draw().unwrap();
         s.key(t("K7")).unwrap();
         assert_eq!(s.stage, Stage::Over, "nobody may take the side tile once the deck is empty");
+    }
+
+    #[test]
+    fn the_hand_is_scored_and_added_to_the_match() {
+        let mut s = started();
+        s.discard(0, t("Si13")).unwrap();
+        s.opp_draw().unwrap();
+        enter_meld(&mut s, "M6 M7 M8");
+        enter_meld(&mut s, "K9 K10 K11");
+        enter_meld(&mut s, "S9 S10 S11 S12 S13");
+        s.finish(1, Some(JOKER));
+        s.players[3].opened = Opened::Melds;
+        assert_eq!(s.hand_scores(), None, "nothing is scored before the leftovers are entered");
+        s.left[3] = Some(40);
+        s.okeys_left[2] = 1;
+        assert_eq!(
+            s.hand_scores(),
+            Some([202, -202, 404, 80]),
+            "finishing with the okey doubles every hand"
+        );
+        let next = s.new_hand();
+        assert_eq!((next.totals, next.history.len()), ([202, -202, 404, 80], 1));
+        assert_eq!(next.lead(), [-404, 202, -122]);
+    }
+
+    #[test]
+    fn penalties_are_written_as_they_happen() {
+        let mut s = started();
+        s.discard(0, t("Si13")).unwrap();
+        s.opp_draw().unwrap();
+        enter_meld(&mut s, "M6 M7 M8");
+        enter_meld(&mut s, "K9 K10 K11");
+        enter_meld(&mut s, "S9 S10 S11 S12 S13");
+        s.discard(1, t("M9")).unwrap();
+        assert_eq!(s.penalties, [0, 101, 0, 0], "M9 fits the run M6-M8 on the table");
+        s.opp_draw().unwrap();
+        s.discard(2, t("K2")).unwrap();
+        assert_eq!(s.penalties, [0, 101, 0, 0]);
     }
 
     #[test]

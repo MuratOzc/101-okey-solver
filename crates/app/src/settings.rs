@@ -146,7 +146,7 @@ pub fn Basics() -> impl IntoView {
                 />
                 "Yapay zekâ"
             </label>
-            <p class="muted">"Simülasyonlarda sonraki turlarını eğitilmiş model oynar; daha isabetli ama daha yavaş. Kurallar değiştirilmişse ya da maç durumu açıkken devreye girmez."</p>
+            <p class="muted">"Simülasyonlarda sonraki turlarını eğitilmiş model oynar; daha isabetli ama daha yavaş. Kurallar değiştirilmişse ve maçın son iki elinde devreye girmez."</p>
         </div>
     }
 }

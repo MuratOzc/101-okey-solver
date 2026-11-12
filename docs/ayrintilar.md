@@ -11,15 +11,13 @@ Ekran ikiye ayrılır: masa (rakipler, son attıkları taşlar, açılan perler,
 
 Önerinin altında beklenen puan farkı, bitirme ihtimali ve attığın taşı sağdakinin alma ihtimali yazar. Program düşündükçe sayılar netleşir; beklemek zorunda değilsin.
 
-Üst çubuktaki ☷ düğmesi atılan taşları, elinin durumunu ve görülmemiş taşları açar; ⚙ ayarları ve maç durumunu. "Bu durumu kopyala" düğmesi o anki durumu metin olarak panoya alır; saçma bir öneri görürsen onu saklamak hatayı yeniden üretmeye yeter.
+Üst çubuktaki ☷ düğmesi atılan taşları, elinin durumunu ve görülmemiş taşları açar; ⚙ ayarları ve maç puanını. "Bu durumu kopyala" düğmesi o anki durumu metin olarak panoya alır; saçma bir öneri görürsen onu saklamak hatayı yeniden üretmeye yeter.
 
-### Maç durumu
+### Maç puanı
 
-Varsayılan olarak program yalnızca oynanan ele bakar ve senin puanınla rakiplerinki arasındaki farkı açmaya çalışır. "Maç durumu" kutusunu açıp işaretlersen hedef **maçı kazanma ihtimali** olur.
+El bitince program puan tablosunu açar. Senin puanın elinden hesaplanır; açmayan rakiplere 101 yazılır, açanlar için elinde kalan puanı girersin (çift açanınki iki katı alınır). El boyunca yazılan cezalar (işlek, okey atma, okeyi kaptırma, 7 çiftle açma) ve bitirenin katları (okey atarak, elden, çiftle) kendiliğinden eklenir. "Yeni el" puanları maç toplamına ekler; üst çubukta el numarası ve liderle aradaki fark görünür. Toplamlar ayarlardan düzeltilebilir, yeni maç da oradan başlar.
 
-Girilenler: kaçıncı elde olduğunuz ve toplam el sayısı; tekli oyunda her rakipten, eşli oyunda takım olarak kaç puan geride olduğun. Öndeysen sayıyı eksi yaz. Yeni ele geçince el numarası kendiliğinden artar; puan farkını elle güncellersin.
-
-Bu modda program gerideyken risk alır (gerekirse cezalı taş atar, işe yaramayan bir bitişi reddeder), öndeyken garantiye oynar. Öneride puan farkı yerine "Maçı kazanma ihtimali %X" görünür.
+Program maç boyunca farkı açmaya oynar. Maçın son iki elinde hedefi **maçı kazanma ihtimali** olur: gerideyken risk alır (gerekirse cezalı taş atar, işe yaramayan bir bitişi reddeder), öndeyken garantiye oynar. O ellerde öneride puan farkı yerine "Maçı kazanma ihtimali %X" görünür ve yapay zekâ devre dışı kalır.
 
 ## Kurallar
 
@@ -56,7 +54,7 @@ Hesap tarayıcıda çekirdek sayısı − 1 işçiyle (en fazla 12) paralel yür
 
 Gördüğün durumu alıp "bu hamleden sonra el sonunda rakiplerle aramdaki puan farkı ne olur" sorusuna tek sayı veren bir değer ağı: 804 açık/kapalı girdi ve 23 sayı, ardından 256, 128 ve 64 hücrelik üç katman. Tarayıcıda çalışır. Rakiplerin elini ve destenin sırasını görmez; `tests/model.rs` bunu sınar.
 
-Simülasyonlarda senin sonraki turlarını o oynar (Kurallar ekranındaki "Yapay zekâ" kutusu, varsayılan açık). Tekli ve eşli oyun için ayrı birer ağ vardır (`crates/app/model/value.bin`, `partners.bin`). Varsayılan kurallarda ve maç durumu kapalıyken devreye girer; diğer durumlarda arama eskisi gibi botla devam eder.
+Simülasyonlarda senin sonraki turlarını o oynar (Kurallar ekranındaki "Yapay zekâ" kutusu, varsayılan açık). Tekli ve eşli oyun için ayrı birer ağ vardır (`crates/app/model/value.bin`, `partners.bin`). Varsayılan kurallarda devreye girer, maçın son iki eli hariç; diğer durumlarda arama eskisi gibi botla devam eder.
 
 **Nasıl eğitildi.** Farklı tarzda botlar el oynar; her kararda birkaç seçenek gerçek dağıtım üzerinde elin sonuna kadar oynatılır (deste 8 kez yeniden karıştırılıp ortalaması alınır) ve "oyuncunun gördüğü → sonuç" kaydedilir. İlk turda seçeneklerden sonrasını bot oynar; sonraki turlarda bir önceki model oynar, böylece model "ileride iyi oynayacağımı" varsayarak değer biçmeyi öğrenir. Tekli ve eşli için üçer tur yapıldı:
 
@@ -118,7 +116,7 @@ Maç yakınken yaklaşık 5 puan kazandırıyor. Çok öndeyken ya da çok gerid
 
 - Bütün ölçümler botlara karşı yapıldı; model de botlarla ve kendisiyle oynayarak öğrendi. İnsanlara karşı ölçülmedi.
 - Eşli ağ, eşin ayarlı bot gibi oynadığı oyunlardan öğrendi.
-- Model katlamalı ya da değiştirilmiş kurallarda ve maç durumu açıkken devreye girmez; o zaman senin sonraki turlarını da bot oynar.
+- Model katlamalı ya da değiştirilmiş kurallarda ve maçın son iki elinde devreye girmez; o zaman senin sonraki turlarını da bot oynar.
 - Model açıkken saniyede yaklaşık 16 kat daha az senaryo denenir.
 - Simülasyonda rakipler bitmeye oynayan botlardır: açabildikleri an açarlar, çiftlerini çift açana işlemek için saklarlar. Blöfü ve masadaki oyuncunun kişisel tarzını bilmezler.
 - 20 000'den fazla yasal hamlesi olan ellerde tam liste yerine hazır planlar karşılaştırılır.
