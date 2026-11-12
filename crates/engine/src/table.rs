@@ -12,6 +12,9 @@ pub struct TableMeld {
     pub added_lo: u8,
     #[serde(default)]
     pub added_hi: u8,
+    /// Laid down during the current turn.
+    #[serde(default)]
+    pub fresh: bool,
 }
 
 impl TableMeld {
@@ -21,7 +24,20 @@ impl TableMeld {
             shape,
             added_lo: 0,
             added_hi: 0,
+            fresh: false,
         }
+    }
+
+    pub fn laid(owner: u8, shape: Shape) -> Self {
+        TableMeld {
+            fresh: true,
+            ..TableMeld::new(owner, shape)
+        }
+    }
+
+    // A run laid this turn and grown past the longest new run would be that longer run laid at once.
+    fn full(&self, rules: &Rules) -> bool {
+        self.fresh && self.shape.len() >= rules.max_run_len
     }
 }
 
@@ -71,6 +87,7 @@ impl Table {
         for m in &mut self.melds {
             m.added_lo = 0;
             m.added_hi = 0;
+            m.fresh = false;
         }
         self.pairs_added = [0; 4];
     }
@@ -92,11 +109,11 @@ impl Table {
         for m in &self.melds {
             match m.shape {
                 Shape::Run { color, lo, hi, .. } => {
-                    if lo > 1 && m.added_lo < cap {
+                    if lo > 1 && m.added_lo < cap && !m.full(rules) {
                         a.tile[pos_tile(color, lo - 1) as usize] = true;
                         a.tile[JOKER as usize] = true;
                     }
-                    if hi < run_top(rules, lo) && m.added_hi < cap {
+                    if hi < run_top(rules, lo) && m.added_hi < cap && !m.full(rules) {
                         a.tile[pos_tile(color, hi + 1) as usize] = true;
                         a.tile[JOKER as usize] = true;
                     }
@@ -233,7 +250,7 @@ impl TableMeld {
         let mut v = Vec::new();
         match self.shape {
             Shape::Run { color, lo, hi, .. } => {
-                if lo > 1 && self.added_lo < cap {
+                if lo > 1 && self.added_lo < cap && !self.full(rules) {
                     let t = pos_tile(color, lo - 1);
                     v.push(LayOption {
                         tile: t,
@@ -246,7 +263,7 @@ impl TableMeld {
                         stands_for: t,
                     });
                 }
-                if hi < run_top(rules, lo) && self.added_hi < cap {
+                if hi < run_top(rules, lo) && self.added_hi < cap && !self.full(rules) {
                     let t = pos_tile(color, hi + 1);
                     v.push(LayOption {
                         tile: t,
@@ -284,14 +301,15 @@ impl TableMeld {
 
 fn lay_off_meld(m: &mut TableMeld, t: Tile, rules: &Rules, want: Option<Side>) -> Option<Side> {
     let cap = rules.layoff_per_end;
+    let full = m.full(rules);
     match &mut m.shape {
         Shape::Run { color: c, lo, hi, jokers } => {
             if t != JOKER && color(t) != *c {
                 return None;
             }
             let top = run_top(rules, *lo);
-            let lo_ok = *lo > 1 && m.added_lo < cap && want != Some(Side::High);
-            let hi_ok = *hi < top && m.added_hi < cap && want != Some(Side::Low);
+            let lo_ok = *lo > 1 && m.added_lo < cap && !full && want != Some(Side::High);
+            let hi_ok = *hi < top && m.added_hi < cap && !full && want != Some(Side::Low);
             if hi_ok && (t == JOKER || pos_tile(*c, *hi + 1) == t) {
                 *hi += 1;
                 if t == JOKER {

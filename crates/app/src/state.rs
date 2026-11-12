@@ -594,7 +594,7 @@ impl State {
         } else if as_pair {
             self.table.pairs_added[p as usize] += 1;
         }
-        self.table.melds.push(TableMeld::new(p, shape));
+        self.table.melds.push(TableMeld::laid(p, shape));
         self.buffer.clear();
         Ok(())
     }

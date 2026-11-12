@@ -59,7 +59,7 @@ impl Game {
             self.players[p as usize].hand[t as usize] -= 1;
             self.seen[t as usize] += 1;
         }
-        self.table.melds.push(TableMeld::new(owner, shape));
+        self.table.melds.push(TableMeld::laid(owner, shape));
         if let Some(log) = &mut self.log {
             log.push(Step::Meld { shape, owner });
         }

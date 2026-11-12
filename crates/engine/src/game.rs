@@ -231,7 +231,7 @@ impl Game {
             for t in s.tiles() {
                 self.seen[t as usize] += 1;
             }
-            self.table.melds.push(TableMeld::new(owner, s));
+            self.table.melds.push(TableMeld::laid(owner, s));
             if let Some(log) = &mut self.log {
                 log.push(Step::Meld { shape: s, owner });
             }

@@ -1047,3 +1047,30 @@ fn opening_with_seven_pairs_writes_minus_101_to_the_opener() {
         assert_eq!(g.players.map(|p| p.penalty), want, "partners {partners}, {n} pairs");
     }
 }
+
+#[test]
+fn a_run_laid_this_turn_cannot_grow_past_five_in_the_same_turn() {
+    use okey_engine::moves::Act;
+    let run = |color, lo, hi| Act::Meld(Shape::Run { color, lo, hi, jokers: 0 });
+    let lay = |meld, tile: &str, side| Act::Layoff { meld, tile: t(tile), side };
+    let hand0 = "K8 K9 K10 K11 K12 K13 S9 S10 S11 S12 S13 M1 M2 M4 M5 M7 M8 Si1 Si2 Si4 Si5 Si7";
+    let others = "K1 K2 K3 K4 K5 K6 K7 S1 S2 S3 S4 S5 S6 S7 S8 M3 M6 M9 M10 M11 M12";
+    let fresh = || game([hand0, others, others, others]);
+
+    let mut g = fresh();
+    let five = [run(0, 9, 13), run(1, 9, 13), lay(0, "K8", Side::Low)];
+    assert!(
+        g.play_acts(0, &five, None).is_err(),
+        "9-13 plus the 8 would be a run of six laid at once"
+    );
+
+    let mut g = fresh();
+    let four = [run(0, 10, 13), run(1, 9, 13), lay(0, "K9", Side::Low)];
+    assert!(g.play_acts(0, &four, None).is_ok(), "10-13 plus the 9 is a run of five");
+    assert!(g.clone().play_acts(0, &[lay(0, "K8", Side::Low)], None).is_err());
+    g.table.new_turn();
+    assert!(
+        g.play_acts(0, &[lay(0, "K8", Side::Low)], None).is_ok(),
+        "next turn the run takes two per end again"
+    );
+}
