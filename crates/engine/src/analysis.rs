@@ -311,7 +311,8 @@ const POSITION_CAP: usize = 20_000;
 const SCREEN_KEEP: usize = 12;
 /// With no more moves than this, skip screening: every move competes under the careful pruning rule.
 const SCREEN_ABOVE_MOVES: usize = 300;
-const FIRST_CUT: usize = 6;
+const FIRST_CUT: usize = 16;
+const SCREEN_DOUBT: f64 = 2.0;
 const REPORT_ROWS: usize = 40;
 const MOVES_SHOWN: usize = 12;
 
@@ -700,6 +701,18 @@ impl Analyzer {
         let keep = (if field > 500 { field / 3 } else { field / 2 }).max(SCREEN_KEEP);
         let w = self.prior_weight;
         self.cands.sort_by(|a, b| merit(a, b, w));
+        let leader = self.cands[0].scores.clone();
+        // Rank by how good each could still be, so a strong move that drew a few bad deals survives the cut.
+        let mut ranked: Vec<(f64, Cand)> = self
+            .cands
+            .drain(..)
+            .map(|c| {
+                let (d, se) = paired(&c.scores, &leader);
+                (if se.is_finite() { d - SCREEN_DOUBT * se } else { f64::NEG_INFINITY }, c)
+            })
+            .collect();
+        ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
+        self.cands = ranked.into_iter().map(|(_, c)| c).collect();
         self.cands.truncate(keep);
         if keep <= SCREEN_KEEP {
             let survivors: Vec<usize> = self
