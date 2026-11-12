@@ -153,6 +153,7 @@ fn main() {
                             })
                             .collect();
                         let mut row = vec![i as f64];
+                        let mut raw = Vec::new();
                         for spec in specs {
                             let mut g = deal.clone();
                             let mut hero = player(spec, nets, i);
@@ -165,12 +166,14 @@ fn main() {
                                 .collect();
                             let [a, b, c] = &mut others[..] else { unreachable!() };
                             let s = play_hand(&mut g, &mut sv, &mut [hero.as_mut(), a, b, c]);
+                            raw.extend(s.map(|x| x as f64));
                             row.push(if partners {
                                 (s[0] + s[2] - s[1] - s[3]) as f64
                             } else {
                                 s[0] as f64 - (s[1] + s[2] + s[3]) as f64 / 3.0
                             });
                         }
+                        row.extend(raw);
                         rows.push(row);
                     }
                     rows
@@ -187,5 +190,78 @@ fn main() {
         let edge: Vec<f64> = rows.iter().map(|r| r[1] - r[k + 1]).collect();
         let ((m, se), (dm, dse)) = (spread(&own), spread(&edge));
         println!("{spec:<34}{:>9.1} ± {:<4.1}{:>17.1} ± {:<4.1}", m, se, dm, dse);
+    }
+    let Some(len) = std::env::var("DUEL_MATCH").ok().and_then(|v| v.parse::<usize>().ok()) else {
+        return;
+    };
+    let scores = |r: &Vec<f64>, k: usize| -> [f64; 4] { std::array::from_fn(|q| r[1 + specs.len() + 4 * k + q]) };
+    let games: Vec<&[Vec<f64>]> = rows.chunks_exact(len).collect();
+    println!(
+        "
+{} games of {len} hands; totals are summed scores, lower is better
+",
+        games.len()
+    );
+    println!(
+        "{:<34}{:>22}{:>12}{:>16}",
+        "player", "my lead after game", "games won", "ahead of all"
+    );
+    for (k, spec) in specs.iter().enumerate() {
+        let (mut leads, mut won, mut ahead) = (Vec::new(), 0.0, 0.0);
+        for game in &games {
+            let mut tot = [0.0; 4];
+            for r in game.iter() {
+                for (t, x) in tot.iter_mut().zip(scores(r, k)) {
+                    *t += x;
+                }
+            }
+            let rest = (tot[1] + tot[2] + tot[3]) / 3.0;
+            leads.push(rest - tot[0]);
+            let best_other = tot[1].min(tot[2]).min(tot[3]);
+            if tot[0] < best_other {
+                won += 1.0;
+            } else if tot[0] == best_other {
+                won += 0.5;
+            }
+            if tot[0] < tot[1] && tot[0] < tot[2] && tot[0] < tot[3] {
+                ahead += 1.0;
+            }
+        }
+        let (m, se) = spread(&leads);
+        let n = games.len() as f64;
+        println!(
+            "{spec:<34}{:>13.0} ± {:<6.0}{:>11.0}%{:>15.0}%",
+            m,
+            se,
+            100.0 * won / n,
+            100.0 * ahead / n
+        );
+    }
+    if let Some(game) = games.first() {
+        for (k, spec) in specs.iter().enumerate() {
+            println!(
+                "
+first game, {spec}: hand, then scores me / right / across / left, running totals"
+            );
+            let mut tot = [0.0; 4];
+            for (h, r) in game.iter().enumerate() {
+                let s = scores(r, k);
+                for (t, x) in tot.iter_mut().zip(s) {
+                    *t += x;
+                }
+                println!(
+                    "  {:>2}: {:>5} {:>5} {:>5} {:>5}   | {:>6} {:>6} {:>6} {:>6}",
+                    h + 1,
+                    s[0],
+                    s[1],
+                    s[2],
+                    s[3],
+                    tot[0],
+                    tot[1],
+                    tot[2],
+                    tot[3]
+                );
+            }
+        }
     }
 }
