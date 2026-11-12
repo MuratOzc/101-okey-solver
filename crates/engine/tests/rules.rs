@@ -37,6 +37,7 @@ fn game_with(rules: Rules, hands: [&str; 4]) -> Game {
         seen,
         piles: [[0; NIDS]; 4],
         last: [None; 4],
+        last_draw: None,
         log: None,
         policy: [Default::default(); 4],
         stakes: None,
@@ -978,4 +979,48 @@ fn far_behind_in_the_last_hand_a_finish_that_cannot_win_is_refused() {
     for c in r.candidates.iter().filter(|c| ends_the_hand(&view, c)) {
         assert!(c.p_win.unwrap() < 0.01, "finishing now cannot win: {} ({:?})", c.label, c.p_win);
     }
+}
+
+#[test]
+fn the_analysis_tells_who_draws_the_last_tile() {
+    let rules = Rules::default();
+    let mut g = Game::deal(&rules, &mut Rng::new(5), 0);
+    g.deck.truncate(2);
+    assert_eq!(g.draw(1).map(|_| g.last_draw), Some(None));
+    assert!(g.draw(2).is_some());
+    assert_eq!(g.last_draw, Some(2));
+    assert!(g.draw(3).is_none());
+
+    let view = View {
+        rules: rules.clone(),
+        gosterge: t("S7"),
+        hand: "K1 K2 K3 K4 K5 M9 M10 M11 S1 S1 Si4 Si5 Si6 K12 M12 S12 Si12 M3 M4 S9 Si13"
+            .split_whitespace()
+            .map(t)
+            .collect(),
+        players: (0..4)
+            .map(|p| PlayerView {
+                hand_len: (p > 0).then_some(21),
+                discards: vec![[t("M1"), t("M2"), t("Si9"), t("K6")][p]],
+                ..Default::default()
+            })
+            .collect(),
+        table: vec![],
+        pairs_added: [0; 4],
+        deck_count: 5,
+        phase: Phase::BeforeDraw,
+        taken: None,
+        stakes: None,
+    };
+    let mut a = Analyzer::new(view, 1).unwrap();
+    a.step(300);
+    let r = a.report();
+    let draw = r.candidates.iter().find(|c| c.decision == Decision::Draw).unwrap();
+    let total: f64 = draw.p_last_draw.iter().sum();
+    assert!(total > 0.0 && total <= 1.0 + 1e-9, "{:?}", draw.p_last_draw);
+    assert!(
+        draw.p_last_draw[0] > draw.p_last_draw[1],
+        "with 5 tiles left and me drawing first, the last draw is mostly mine: {:?}",
+        draw.p_last_draw
+    );
 }

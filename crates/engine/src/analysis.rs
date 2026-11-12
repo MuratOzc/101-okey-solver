@@ -199,6 +199,7 @@ impl View {
             seen,
             piles,
             last,
+            last_draw: None,
             log: None,
             policy: [Policy::default(); 4],
             stakes: self.stakes,
@@ -234,6 +235,9 @@ pub struct CandReport {
     pub p_deckout: f64,
     /// How often the next player takes the tile this move discards.
     pub p_next_takes: f64,
+    /// For each seat counted from me: how often it draws the deck's last tile.
+    #[serde(default)]
+    pub p_last_draw: [f64; 4],
     /// Chance of winning the match, when the match situation is known. `mean` is then the chance
     /// of losing it, per mille, instead of a score gap.
     #[serde(default)]
@@ -273,6 +277,7 @@ struct Cand {
     opp_finish: u32,
     deckout: u32,
     next_takes: u32,
+    last_draw: [u32; 4],
     alive: bool,
     prior: Option<f32>,
     rated: bool,
@@ -323,6 +328,7 @@ fn blank(decision: Decision, mv: Option<Move>) -> Cand {
         opp_finish: 0,
         deckout: 0,
         next_takes: 0,
+        last_draw: [0; 4],
         alive: true,
         prior: None,
         rated: false,
@@ -640,6 +646,9 @@ impl Analyzer {
             c.opp_finish += r.opp_finish as u32;
             c.deckout += r.deckout as u32;
             c.next_takes += r.next_takes as u32;
+            if let Some(p) = r.last_draw {
+                c.last_draw[p as usize] += 1;
+            }
         }
     }
 
@@ -771,6 +780,7 @@ impl Analyzer {
                     p_opp_finish: c.opp_finish as f64 / n,
                     p_deckout: c.deckout as f64 / n,
                     p_next_takes: c.next_takes as f64 / n,
+                    p_last_draw: c.last_draw.map(|k| k as f64 / n),
                     p_win: self.view.stakes.map(|_| c.win / n),
                     alive: c.alive,
                     mv: c.mv.clone().filter(|_| rank < MOVES_SHOWN),
@@ -896,6 +906,8 @@ pub struct RolloutResult {
     pub opp_finish: bool,
     pub deckout: bool,
     pub next_takes: bool,
+    /// Who drew the deck's last tile, counted from me.
+    pub last_draw: Option<u8>,
 }
 
 pub fn rollout(view: &View, sv: &mut Solver, d: Decision, seed: u64, opts: &Options, depth: u8) -> RolloutResult {
@@ -907,9 +919,8 @@ fn play_decision_on(view: &View, mut g: Game, sv: &mut Solver, d: Decision, dept
     let mut out = None;
     let mut rest = depth;
     match d {
-        Decision::Draw => match g.deck.pop() {
-            Some(t) => {
-                g.players[0].hand[t as usize] += 1;
+        Decision::Draw => match g.draw(0) {
+            Some(_) => {
                 out = match ai {
                     Some(net) => model_act(&mut g, sv, net, None),
                     None if depth > 0 => g.lookahead_act(sv, 0, None, depth - 1),
@@ -1011,6 +1022,7 @@ fn conclude(view: &View, mut g: Game, out: Option<Outcome>, sv: &mut Solver, dep
         opp_finish,
         deckout: o == Outcome::DeckOut,
         next_takes,
+        last_draw: g.last_draw,
     }
 }
 
@@ -1211,6 +1223,9 @@ pub fn merge_reports(reports: &[Report]) -> Report {
             m.p_opp_finish = mix(m.p_opp_finish, c.p_opp_finish);
             m.p_deckout = mix(m.p_deckout, c.p_deckout);
             m.p_next_takes = mix(m.p_next_takes, c.p_next_takes);
+            for (x, &y) in m.p_last_draw.iter_mut().zip(&c.p_last_draw) {
+                *x = mix(*x, y);
+            }
             m.p_win = m.p_win.zip(c.p_win).map(|(x, y)| mix(x, y));
             m.diff_se += if c.diff_se.is_finite() {
                 (c.diff_se * b).powi(2)

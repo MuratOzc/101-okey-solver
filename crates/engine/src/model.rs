@@ -111,8 +111,9 @@ pub fn model_turn(g: &mut Game, sv: &mut Solver, net: &Net, first: bool) -> Opti
         if draw_or_take(net, g, sv, p).is_some_and(|(draw, take)| take < draw) {
             taken = Some(g.take_top(p));
         } else {
-            let Some(t) = g.deck.pop() else { return Some(Outcome::DeckOut) };
-            g.players[p as usize].hand[t as usize] += 1;
+            if g.draw(p).is_none() {
+                return Some(Outcome::DeckOut);
+            }
         }
     }
     model_act(g, sv, net, taken)

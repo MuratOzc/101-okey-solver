@@ -98,6 +98,8 @@ pub struct Game {
     /// Tiles each player has discarded that nobody took.
     pub piles: [Counts; 4],
     pub last: [Option<Tile>; 4],
+    /// Who drew the deck's last tile.
+    pub last_draw: Option<u8>,
     pub log: Option<Vec<Step>>,
     pub policy: [Policy; 4],
     /// The match situation seat 0 is playing for, when known.
@@ -841,6 +843,15 @@ impl Game {
         self.can_use_taken(sv, p, t)
     }
 
+    pub fn draw(&mut self, p: u8) -> Option<Tile> {
+        let t = self.deck.pop()?;
+        self.players[p as usize].hand[t as usize] += 1;
+        if self.deck.is_empty() {
+            self.last_draw = Some(p);
+        }
+        Some(t)
+    }
+
     pub fn take_top(&mut self, p: u8) -> Tile {
         let t = self.top.take().expect("tile to take");
         self.seen[t as usize] -= 1;
@@ -906,8 +917,9 @@ impl Game {
         let taken = if self.bot_wants_take(sv, p) {
             Some(self.take_top(p))
         } else {
-            let Some(t) = self.deck.pop() else { return Some(Outcome::DeckOut) };
-            self.players[p as usize].hand[t as usize] += 1;
+            if self.draw(p).is_none() {
+                return Some(Outcome::DeckOut);
+            }
             None
         };
         let res = self.bot_act(sv, p, taken);
@@ -1071,8 +1083,9 @@ impl Game {
         let taken = if self.bot_wants_take(sv, hero) {
             Some(self.take_top(hero))
         } else {
-            let Some(t) = self.deck.pop() else { return Some(Outcome::DeckOut) };
-            self.players[hero as usize].hand[t as usize] += 1;
+            if self.draw(hero).is_none() {
+                return Some(Outcome::DeckOut);
+            }
             None
         };
         self.lookahead_act(sv, hero, taken, deeper)
@@ -1259,6 +1272,7 @@ impl Game {
             seen,
             piles: [[0; NIDS]; 4],
             last: [None; 4],
+            last_draw: None,
             log: None,
             policy: [Policy::default(); 4],
             stakes: None,
