@@ -7,7 +7,7 @@ use okey_engine::analysis::{
 };
 use okey_engine::game::{Opened, Step};
 use okey_engine::meld::{Shape, pos_tile};
-use okey_engine::moves::Move;
+use okey_engine::moves::{Act, Move};
 use okey_engine::table::{JokerSlot, LayOption, Side};
 use okey_engine::tile::*;
 use serde::{Deserialize, Serialize};
@@ -219,6 +219,7 @@ pub struct Ctx {
     best: Memo<Option<Choice>>,
     chosen: Memo<Option<Choice>>,
     steps: Memo<Option<Vec<Step>>>,
+    hand: Memo<Option<HandReport>>,
 }
 
 impl Ctx {
@@ -372,6 +373,13 @@ fn App() -> impl IntoView {
         best,
         chosen,
         steps,
+        hand: Memo::new(move |_| {
+            st.with(|s| {
+                (s.stage == Stage::Play)
+                    .then(|| s.view_as(Phase::AfterDraw).map(|v| hand_report(&v)))
+                    .flatten()
+            })
+        }),
     };
     provide_context(ctx);
 
@@ -724,6 +732,13 @@ fn Rack() -> impl IntoView {
                         <b>"Ben"</b>
                         <span>{format!("{} taş", s.hand.len())}</span>
                         {opened.map(|o| view! { <span class="open">{o}</span> })}
+                        {ctx.hand.get().filter(|_| pv.opened == Opened::No).map(|h| view! {
+                            <span class="reach" title="Elindeki taşlarla en iyi dizilişte">
+                                <span class:open={h.open_value >= h.meld_req}>{format!("per {} / {}", h.open_value, h.meld_req)}</span>
+                                " · "
+                                <span class:open={h.pairs >= h.pair_req}>{format!("çift {} / {}", h.pairs, h.pair_req)}</span>
+                            </span>
+                        })}
                         <span class="grow"></span>
                         {pv.discards.last().map(|&t| view! { <span class="mine">"attığım " {tile_view(t, okey)}</span> })}
                     </div>
@@ -1537,7 +1552,10 @@ fn Plan() -> impl IntoView {
             ("Kesinleşti", "done")
         };
         let steps = ctx.steps.get().unwrap_or_default();
-        let title = plan_title(&steps, &s);
+        let title = match &mv {
+            Some(m) => move_short(m, &s),
+            None => plan_title(&steps, &s),
+        };
         let stats = cand.as_ref().map(|c| {
             let aim = match c.p_win {
                 Some(w) => format!("Maçı kazanma {}", pct(w)),
@@ -1581,7 +1599,7 @@ fn Plan() -> impl IntoView {
                 step_view(x, k, okey, &s, &kept)
             })
             .collect_view();
-        let alts = report.clone().map(|r| alternatives(ctx, &r));
+        let alts = report.clone().map(|r| alternatives(ctx, &r, &s));
         view! {
             <h2>{if is_best { title } else { format!("Seçtiğin: {title}") }}</h2>
             <p class="sub">{stats}</p>
@@ -1601,15 +1619,70 @@ fn Plan() -> impl IntoView {
     }
 }
 
-fn short_label(label: &str, top: &str) -> String {
-    let top_parts: Vec<&str> = top.split(" · ").collect();
-    let parts: Vec<&str> = label.split(" · ").collect();
-    let mut out: Vec<String> = parts.iter().filter(|p| !top_parts.contains(p)).map(|p| p.to_string()).collect();
-    out.extend(top_parts.iter().filter(|p| !parts.contains(p)).map(|p| format!("{p} yok")));
-    if out.is_empty() { label.to_string() } else { out.join(" · ") }
+fn move_short(mv: &Move, s: &State) -> String {
+    let unopened = s.players[0].opened == Opened::No;
+    let (mut value, mut melds, mut pairs, mut gifts, mut swaps) = (0, 0, 0, 0, false);
+    let mut laid: Vec<Tile> = Vec::new();
+    let mut left = s.hand.len() as i32 - 1;
+    for act in &mv.acts {
+        match act {
+            Act::Meld(sh) if sh.is_pair() => {
+                pairs += 1;
+                left -= 2;
+            }
+            Act::Meld(sh) => {
+                melds += 1;
+                value += sh.open_value(&s.rules);
+                left -= sh.len() as i32;
+            }
+            Act::Layoff { tile, .. } => {
+                laid.push(*tile);
+                left -= 1;
+            }
+            Act::Swap(slot) => {
+                swaps = true;
+                left += slot.jokers as i32 - slot.tiles.len() as i32;
+            }
+            Act::Gift { .. } => {
+                gifts += 1;
+                left -= 2;
+            }
+        }
+    }
+    let mut parts = Vec::new();
+    match (unopened, melds, pairs) {
+        (true, 0, 0) => parts.push("Açma".to_string()),
+        (true, 0, n) => parts.push(format!("{n} çiftle aç")),
+        (true, _, _) => parts.push(format!("Aç {value}")),
+        (false, 0, 0) => {}
+        (false, 0, n) => parts.push(format!("{n} çift indir")),
+        (false, n, _) => parts.push(format!("{n} per indir")),
+    }
+    match laid[..] {
+        [] => {}
+        [t] => parts.push(format!("{} işle", if t == JOKER { "okeyi".to_string() } else { name(t) })),
+        _ => parts.push(format!("{} taş işle", laid.len())),
+    }
+    if swaps {
+        parts.push("okey al".into());
+    }
+    if gifts > 0 {
+        parts.push(format!("{gifts} çift işle"));
+    }
+    let tile = if mv.discard == JOKER {
+        "Okey".to_string()
+    } else {
+        name(mv.discard)
+    };
+    parts.push(if left == 0 {
+        format!("{tile} atıp bitir")
+    } else {
+        format!("{tile} at")
+    });
+    parts.join(" · ")
 }
 
-fn alternatives(ctx: Ctx, report: &Report) -> impl IntoView + use<> {
+fn alternatives(ctx: Ctx, report: &Report, s: &State) -> impl IntoView + use<> {
     let Some(top) = report.candidates.first().cloned() else {
         return ().into_any();
     };
@@ -1624,23 +1697,37 @@ fn alternatives(ctx: Ctx, report: &Report) -> impl IntoView + use<> {
     if rows.len() < 2 {
         return ().into_any();
     }
+    let mut seen: Vec<String> = Vec::new();
+    let labels: Vec<String> = rows
+        .iter()
+        .map(|c| {
+            let label = match &c.mv {
+                Some(mv) => move_short(mv, s),
+                None => c.label.clone(),
+            };
+            let again = seen.contains(&label);
+            seen.push(label.clone());
+            if again { format!("{label} (başka dizilişle)") } else { label }
+        })
+        .collect();
     view! {
         <div class="bars">
-            <span class="muted">"Seçenekler · dokun, adımlarını gör"</span>
-            {rows.into_iter().map(|c| {
+            <span class="muted">"Seçenekler · dokununca adımları görünür"</span>
+            {rows.into_iter().zip(labels).map(|(c, label)| {
                 let d = c.decision;
                 let mv = c.mv.clone();
                 let behind = c.mean - top.mean;
                 let width = (100.0 - behind * 2.0).clamp(6.0, 100.0);
                 let note = match (c.p_win, top.p_win) {
                     (Some(w), Some(_)) => pct(w),
-                    _ if behind < 0.05 => "en iyi".to_string(),
-                    _ if c.alive => format!("−{behind:.1}"),
-                    _ => format!("−{behind:.0} · elendi"),
+                    _ if d == top.decision => "önerilen".to_string(),
+                    _ if behind < 0.05 => "eşit".to_string(),
+                    _ if c.alive => format!("{behind:.1} puan geride"),
+                    _ => format!("{behind:.0} puan geride"),
                 };
                 view! {
                     <button class="bar-row alt" class:best={picked == d} on:click=move |_| ctx.pick.set(Some((d, mv.clone())))>
-                        <span class="lbl">{if c.decision == top.decision { "Önerilen".to_string() } else { short_label(&c.label, &top.label) }}</span>
+                        <span class="lbl">{label}</span>
                         <span class="bar"><i style=format!("width:{width:.0}%")></i></span>
                         <span class="note">{note}</span>
                     </button>
@@ -1744,10 +1831,9 @@ fn Discards() -> impl IntoView {
 fn HandInfo() -> impl IntoView {
     let ctx = expect_context::<Ctx>();
     let st = ctx.st;
-    let report = Memo::new(move |_| st.with(|s| s.view_as(Phase::AfterDraw).map(|v| hand_report(&v))));
     move || {
         let okey = okey_tile(&st.get());
-        report.get().map(|r: HandReport| {
+        ctx.hand.get().map(|r: HandReport| {
             let opened = st.with(|s| s.players[0].opened);
             let head = match opened {
                 Opened::No => format!("Perle açış: {} / {} · Çift: {} / {}", r.open_value, r.meld_req, r.pairs, r.pair_req),
