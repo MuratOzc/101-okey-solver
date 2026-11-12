@@ -48,7 +48,7 @@ Kuralların hepsi "Kurallar" ekranından değiştirilebilir. Varsayılanlar:
 4. **Açıkça geride kalan hamleler elenir**, kalan süre yakın olanlara harcanır.
 5. **Sıralama** el modunda ortalama puan farkına, maç modunda maçı kaybetme ihtimaline göre yapılır.
 
-Hesap tarayıcıda çekirdek sayısı − 1 işçiyle (en fazla 12) paralel yürür.
+Hesap tarayıcıda çekirdek sayısı − 1 işçiyle (en fazla 12) paralel yürür. İstatistiği tek bir yönetici tutar: işçiler yalnızca istenen hamleleri dağıtımlarda oynatıp sonucu gönderir, hangi hamlenin eleneceğine yönetici bütün işçilerin sonuçlarına bakarak karar verir. Öndeki hamleyi hiçbir rakibi bir iki puandan fazla geçemeyecek hâle gelince hesap durur. Derleme WebAssembly SIMD kullanır (Chrome 91, Firefox 89, Safari 16.4 ve sonrası).
 
 ## Yapay zekâ modeli
 

@@ -3,7 +3,7 @@ mod state;
 
 use leptos::prelude::*;
 use okey_engine::analysis::{
-    CandReport, Decision, HandReport, Options, Phase, Report, describe, describe_move, hand_report, merge_reports,
+    Analyzer, CandReport, Decision, Field, HandReport, Options, Packed, Phase, Report, describe, describe_move, hand_report, model_fits,
 };
 use okey_engine::game::{Opened, Step};
 use okey_engine::meld::{Shape, pos_tile};
@@ -23,12 +23,19 @@ const SEAT_OWNER: [&str; 4] = ["kendi", "Sağ'ın", "Karşı'nın", "Sol'un"];
 const OPPONENTS: [u8; 3] = [3, 2, 1];
 const GROUP_COLORS: [&str; 6] = ["#22c55e", "#38bdf8", "#f59e0b", "#e879f9", "#f87171", "#a3e635"];
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Clone, Debug)]
 struct Resp {
-    generation: u32,
     report: Option<Report>,
     error: Option<String>,
     done: bool,
+}
+
+#[derive(Deserialize)]
+struct Played {
+    generation: u32,
+    version: u32,
+    deals: Vec<Vec<Packed>>,
+    error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -40,13 +47,33 @@ enum Req<'a> {
         seed: u64,
         options: Options,
         model: bool,
+        field: &'a Field,
+    },
+    Field {
+        generation: u32,
+        field: &'a Field,
     },
     Stop,
 }
 
+/// The one analyzer that keeps the statistics; the workers only play the deals it asks for.
+struct Boss {
+    generation: u32,
+    an: Analyzer,
+    sent: u32,
+    started: f64,
+    shown_at: f64,
+    shown: Option<Decision>,
+    done: bool,
+}
+
+const MAX_DEALS: u64 = 40_000;
+const MAX_MS: f64 = 60_000.0;
+const SHOW_EVERY_MS: f64 = 120.0;
+
 thread_local! {
     static WORKERS: RefCell<Vec<Worker>> = const { RefCell::new(Vec::new()) };
-    static LATEST: RefCell<Vec<Option<Resp>>> = const { RefCell::new(Vec::new()) };
+    static BOSS: RefCell<Option<Boss>> = const { RefCell::new(None) };
     static LAST_SENT: RefCell<String> = const { RefCell::new(String::new()) };
     static GENERATION: RefCell<u32> = const { RefCell::new(0) };
     static UNDO: RefCell<Vec<State>> = const { RefCell::new(Vec::new()) };
@@ -76,19 +103,10 @@ fn worker_count() -> usize {
     cores.saturating_sub(1).clamp(1, MAX_WORKERS)
 }
 
-fn start_all(generation: u32, view: &okey_engine::analysis::View, model: bool) {
-    let base = js_sys::Date::now() as u64;
-    LATEST.with(|l| l.borrow_mut().iter_mut().for_each(|r| *r = None));
+fn send_all(make: impl Fn(usize) -> Option<String>) {
     WORKERS.with(|ws| {
         for (i, w) in ws.borrow().iter().enumerate() {
-            let req = Req::Start {
-                generation,
-                view,
-                seed: base.wrapping_add(i as u64 * 0x9E37_79B9),
-                options: Options::default(),
-                model,
-            };
-            if let Ok(j) = serde_json::to_string(&req) {
+            if let Some(j) = make(i) {
                 let _ = w.post_message(&JsValue::from_str(&j));
             }
         }
@@ -96,37 +114,94 @@ fn start_all(generation: u32, view: &okey_engine::analysis::View, model: bool) {
 }
 
 fn stop_all() {
-    WORKERS.with(|ws| {
-        for w in ws.borrow().iter() {
-            if let Ok(j) = serde_json::to_string(&Req::Stop) {
-                let _ = w.post_message(&JsValue::from_str(&j));
-            }
-        }
-    });
+    send_all(|_| serde_json::to_string(&Req::Stop).ok());
 }
 
-fn merged(generation: u32) -> Option<Resp> {
-    LATEST.with(|l| {
-        let l = l.borrow();
-        let current: Vec<&Resp> = l.iter().flatten().filter(|r| r.generation == generation).collect();
-        if current.is_empty() {
-            return None;
+fn start_all(generation: u32, view: &okey_engine::analysis::View, model: bool) -> Result<(), String> {
+    let now = js_sys::Date::now();
+    let base = now as u64;
+    let options = Options::default();
+    let mut an = Analyzer::with_options(view.clone(), base, options)?;
+    let field = an.field();
+    send_all(|i| {
+        serde_json::to_string(&Req::Start {
+            generation,
+            view,
+            seed: base.wrapping_add((i as u64 + 1) * 0x9E37_79B9),
+            options,
+            model,
+            field: &field,
+        })
+        .ok()
+    });
+    BOSS.with(|b| {
+        *b.borrow_mut() = Some(Boss {
+            generation,
+            an,
+            sent: field.version,
+            started: now,
+            shown_at: 0.0,
+            shown: None,
+            done: false,
+        })
+    });
+    Ok(())
+}
+
+/// Keep the recommendation on screen while it is within the noise of the new leader.
+fn steady(report: &mut Report, shown: &mut Option<Decision>) {
+    if let Some(d) = *shown
+        && let Some(i) = report.candidates.iter().position(|c| c.decision == d && c.alive)
+        && i > 0
+    {
+        let (c, top) = (&report.candidates[i], &report.candidates[0]);
+        let usable = c.mv.is_some() || !matches!(c.decision, Decision::Play(_));
+        if usable && c.mean - top.mean <= c.diff_se {
+            let c = report.candidates.remove(i);
+            report.candidates.insert(0, c);
         }
-        if let Some(e) = current.iter().find_map(|r| r.error.clone()) {
+    }
+    *shown = report.candidates.first().map(|c| c.decision);
+}
+
+/// Take in what a worker played; now and then, a fresh report for the screen.
+fn played(msg: Played) -> Option<Resp> {
+    BOSS.with(|b| {
+        let mut b = b.borrow_mut();
+        let boss = b.as_mut().filter(|boss| boss.generation == msg.generation && !boss.done)?;
+        if let Some(e) = msg.error {
+            boss.done = true;
             return Some(Resp {
-                generation,
                 report: None,
                 error: Some(e),
                 done: true,
             });
         }
-        let reports: Vec<Report> = current.iter().filter_map(|r| r.report.clone()).collect();
-        let done = current.len() == l.len() && current.iter().all(|r| r.done);
+        boss.an.absorb(msg.version, &msg.deals);
+        if boss.an.version() != boss.sent {
+            let field = boss.an.field();
+            boss.sent = field.version;
+            let generation = boss.generation;
+            send_all(|_| serde_json::to_string(&Req::Field { generation, field: &field }).ok());
+        }
+        let now = js_sys::Date::now();
+        if now - boss.shown_at < SHOW_EVERY_MS {
+            return None;
+        }
+        let mut report = boss.an.report();
+        if report.candidates.first().is_none_or(|c| c.n == 0) {
+            return None;
+        }
+        boss.shown_at = now;
+        boss.done = report.settled || report.iterations >= MAX_DEALS || now - boss.started > MAX_MS;
+        if boss.done {
+            stop_all();
+        }
+        steady(&mut report, &mut boss.shown);
         Some(Resp {
-            generation,
-            report: Some(merge_reports(&reports)),
+            report: Some(report),
             error: None,
-            done,
+            done: boss.done,
         })
     })
 }
@@ -300,24 +375,18 @@ fn App() -> impl IntoView {
     };
     provide_context(ctx);
 
-    for i in 0..worker_count() {
+    for _ in 0..worker_count() {
         let Ok(w) = Worker::new("./worker_loader.js") else { break };
         let onmsg = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
             let Some(s) = e.data().as_string() else { return };
-            let Ok(r) = serde_json::from_str::<Resp>(&s) else { return };
-            let generation = GENERATION.with(|g| *g.borrow());
-            if r.generation != generation {
-                return;
-            }
-            LATEST.with(|l| l.borrow_mut()[i] = Some(r));
-            if let Some(m) = merged(generation) {
-                analysis.set(Some(m));
+            let Ok(msg) = serde_json::from_str::<Played>(&s) else { return };
+            if let Some(r) = played(msg) {
+                analysis.set(Some(r));
             }
         });
         w.set_onmessage(Some(onmsg.as_ref().unchecked_ref()));
         onmsg.forget();
         WORKERS.with(|x| x.borrow_mut().push(w));
-        LATEST.with(|l| l.borrow_mut().push(None));
     }
 
     Effect::new(move |_| {
@@ -337,8 +406,18 @@ fn App() -> impl IntoView {
         });
         analysis.set(None);
         pick.set(None);
+        BOSS.with(|b| *b.borrow_mut() = None);
         match view {
-            Some(v) => start_all(generation, &v, model),
+            Some(v) => {
+                if let Err(e) = start_all(generation, &v, model) {
+                    stop_all();
+                    analysis.set(Some(Resp {
+                        report: None,
+                        error: Some(e),
+                        done: true,
+                    }));
+                }
+            }
             None => stop_all(),
         }
     });
@@ -1445,19 +1524,9 @@ fn Plan() -> impl IntoView {
         let cand = report.as_ref().and_then(|r| find(r, d).cloned());
         let is_best = ctx.best.get().is_some_and(|(b, _)| b == d);
         let screening = report.as_ref().is_some_and(|r| r.screening);
-        let (settled, close) = match (&resp, &report) {
-            (Some(r), Some(rep)) => {
-                let mut alive = rep.candidates.iter().filter(|c| c.alive);
-                let top = alive.next();
-                let second = alive.next();
-                let apart = match (top, second) {
-                    (Some(t), Some(s)) => s.mean - t.mean > 2.0 * s.diff_se,
-                    _ => true,
-                };
-                (r.done || (apart && top.is_some_and(|t| t.n >= 300)), !apart)
-            }
-            _ => (false, false),
-        };
+        let done = resp.as_ref().is_some_and(|r| r.done);
+        let settled = done || report.as_ref().is_some_and(|r| r.settled);
+        let close = report.as_ref().is_some_and(|r| r.close);
         let state_note = if screening {
             ("Bütün hamleler taranıyor, öneri değişebilir", "pending")
         } else if !settled {
@@ -1480,6 +1549,7 @@ fn Plan() -> impl IntoView {
                 pct(c.p_next_takes)
             )
         });
+        let model_on = s.model && s.view().is_some_and(|v| model_fits(&v, v.rules.partners));
         let status = resp.as_ref().zip(report.as_ref()).map(|(r, rep)| {
             let cut = if rep.truncated {
                 " · seçenek çok, bir kısmı incelenemedi"
@@ -1488,7 +1558,7 @@ fn Plan() -> impl IntoView {
             };
             let ai = if rep.deep {
                 " · sonraki turun da hesapta"
-            } else if rep.model {
+            } else if model_on {
                 " · sonraki turlarını yapay zekâ oynuyor"
             } else {
                 ""

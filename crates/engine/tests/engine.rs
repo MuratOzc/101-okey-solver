@@ -341,23 +341,47 @@ fn describe_lists_physical_steps() {
 }
 
 #[test]
-fn merged_reports_weight_by_sample_count() {
+fn deals_played_elsewhere_count_the_same_as_deals_played_here() {
     let view = sample_view(Phase::AfterDraw);
-    let mut a = Analyzer::new(view.clone(), 1).unwrap();
-    let mut b = Analyzer::new(view, 2).unwrap();
-    a.step(30);
-    b.step(90);
-    let (ra, rb) = (a.report(), b.report());
-    let merged = merge_reports(&[ra.clone(), rb.clone()]);
-    assert_eq!(merged.iterations, 120);
-    let d = merged.candidates[0].decision;
-    let (ca, cb) = (
-        ra.candidates.iter().find(|c| c.decision == d).unwrap(),
-        rb.candidates.iter().find(|c| c.decision == d).unwrap(),
-    );
-    let expect = (ca.mean * ca.n as f64 + cb.mean * cb.n as f64) / (ca.n + cb.n) as f64;
-    assert!((merged.candidates[0].mean - expect).abs() < 1e-9);
-    assert_eq!(merged.candidates[0].n, ca.n + cb.n);
+    let mut alone = Analyzer::new(view.clone(), 1).unwrap();
+    alone.step(150);
+    let mut boss = Analyzer::new(view.clone(), 1).unwrap();
+    let mut hand = Analyzer::new(view, 99).unwrap();
+    for k in 0..150u64 {
+        let field = boss.field();
+        hand.set_field(&field);
+        let deal = hand.evaluate(1u64.wrapping_add(k.wrapping_mul(0x2545_F491_4F6C_DD1D)));
+        boss.absorb(field.version, &[deal]);
+    }
+    let rows = |a: &Analyzer| {
+        let r = a.report();
+        (
+            r.iterations,
+            r.candidates
+                .iter()
+                .map(|c| (c.decision, c.n, c.mean.to_bits(), c.alive))
+                .collect::<Vec<_>>(),
+        )
+    };
+    assert_eq!(rows(&alone), rows(&boss));
+}
+
+#[test]
+fn late_results_count_only_for_what_is_still_alive() {
+    let view = sample_view(Phase::AfterDraw);
+    let mut boss = Analyzer::new(view.clone(), 1).unwrap();
+    let mut hand = Analyzer::new(view, 2).unwrap();
+    let first = boss.field();
+    hand.set_field(&first);
+    let batch: Vec<_> = (0..200u64).map(|k| hand.evaluate(k)).collect();
+    boss.absorb(first.version, &batch);
+    let r = boss.report();
+    assert_eq!(r.iterations, 200, "a field that only lost candidates keeps taking the old results");
+    assert!(boss.version() > first.version, "200 deals prune something");
+    assert!(r.candidates.iter().any(|c| !c.alive && c.n < 200));
+    assert!(r.candidates.iter().filter(|c| c.alive).all(|c| c.n == 200));
+    boss.absorb(first.version + 1000, &batch);
+    assert_eq!(boss.report().iterations, 200, "results for a field never sent are ignored");
 }
 
 #[test]

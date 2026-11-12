@@ -262,6 +262,31 @@ pub struct Report {
     /// The remaining candidates are being compared with look-ahead simulations.
     pub deep: bool,
     pub model: bool,
+    /// No other live candidate can still be better than the leader by more than a point or two.
+    pub settled: bool,
+    /// The runner-up is within the noise of the leader.
+    pub close: bool,
+}
+
+/// The live candidates, in the order their results must come back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Field {
+    pub version: u32,
+    pub depth: u8,
+    pub cands: Vec<Decision>,
+}
+
+/// One candidate's result on one deal: gap, tie, own, chance of winning per million, flags.
+pub type Packed = [i32; 5];
+
+fn pack(r: &RolloutResult) -> Packed {
+    let flags = r.finish as i32
+        | (r.opened as i32) << 1
+        | (r.opp_finish as i32) << 2
+        | (r.deckout as i32) << 3
+        | (r.next_takes as i32) << 4
+        | r.last_draw.map_or(0, |p| p as i32 + 1) << 5;
+    [r.gap, r.tie, r.own, (r.win as f64 * 1e6).round() as i32, flags]
 }
 
 struct Cand {
@@ -300,6 +325,12 @@ pub struct Analyzer {
     net: Option<Arc<Net>>,
     prior_weight: f64,
     own_turns: bool,
+    version: u32,
+    sent: std::collections::VecDeque<Field>,
+    work: Vec<(Decision, Option<Move>)>,
+    work_version: Option<u32>,
+    work_depth: u8,
+    next_prune: u64,
 }
 
 /// Look-ahead costs roughly ten plain simulations each, so it starts only when this few candidates are left.
@@ -312,6 +343,10 @@ const SCREEN_KEEP: usize = 12;
 /// With no more moves than this, skip screening: every move competes under the careful pruning rule.
 const SCREEN_ABOVE_MOVES: usize = 300;
 const FIRST_CUT: usize = 16;
+const FIELDS_KEPT: usize = 48;
+const SETTLE_AFTER: usize = 300;
+/// Points per hand (or per mille of match chance) that are not worth more waiting.
+const SETTLE_WITHIN: f64 = 1.5;
 const SCREEN_DOUBT: f64 = 2.0;
 const REPORT_ROWS: usize = 40;
 const MOVES_SHOWN: usize = 12;
@@ -465,6 +500,15 @@ pub fn label(d: &Decision) -> String {
     }
 }
 
+// A network knows only the plain score gap under the default rules, alone or in teams as it was trained.
+pub fn model_fits(view: &View, partners: bool) -> bool {
+    let trained = Rules {
+        partners,
+        ..Rules::default()
+    };
+    view.stakes.is_none() && view.rules == trained
+}
+
 impl Analyzer {
     pub fn new(view: View, seed: u64) -> Result<Self, String> {
         Self::with_options(view, seed, Options::default())
@@ -492,6 +536,12 @@ impl Analyzer {
             net: None,
             prior_weight: 0.0,
             own_turns: false,
+            version: 0,
+            sent: Default::default(),
+            work: vec![],
+            work_version: None,
+            work_depth: 0,
+            next_prune: 0,
         };
         // Playing for the match, what decides is finish-or-wait and which tile to give up, including
         // tiles that cost a penalty; a winning line may come up on one deal in fifty, so the field has to
@@ -524,12 +574,7 @@ impl Analyzer {
     /// The network's opinion of a candidate counts like `weight` simulated deals; with `own_turns`
     /// it also plays my later turns inside every simulation.
     pub fn use_model(&mut self, net: Arc<Net>, weight: f64, own_turns: bool) {
-        // A network knows only the plain score gap under the default rules, alone or in teams as it was trained.
-        let trained = Rules {
-            partners: net.partners,
-            ..Rules::default()
-        };
-        if self.view.stakes.is_some() || self.view.rules != trained {
+        if !model_fits(&self.view, net.partners) {
             return;
         }
         self.net = Some(net);
@@ -623,32 +668,105 @@ impl Analyzer {
             .map(|(i, t)| self.candidate(i, t))
             .collect();
         self.screening = false;
+        self.version += 1;
         self.rate();
     }
 
-    /// One more deal, played out for every live candidate.
-    fn sample_once(&mut self) {
-        let seed = self.seed.wrapping_add(self.iter.wrapping_mul(0x2545_F491_4F6C_DD1D));
-        self.iter += 1;
+    /// What has to be played now. Results are accepted for this and the few fields before it.
+    pub fn field(&mut self) -> Field {
+        if self.sent.back().is_none_or(|f| f.version != self.version) {
+            self.sent.push_back(Field {
+                version: self.version,
+                depth: self.depth,
+                cands: self.cands.iter().filter(|c| c.alive).map(|c| c.decision).collect(),
+            });
+            if self.sent.len() > FIELDS_KEPT {
+                self.sent.pop_front();
+            }
+        }
+        self.sent.back().unwrap().clone()
+    }
+
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
+    /// Take over a field to play; this analyzer must have been made from the same view and options.
+    pub fn set_field(&mut self, field: &Field) {
+        self.work = field
+            .cands
+            .iter()
+            .map(|&d| {
+                let mv = match d {
+                    Decision::Play(id) => self.positions.get((id / 64) as usize).map(|acts| Move {
+                        acts: acts.clone(),
+                        discard: (id % 64) as Tile,
+                    }),
+                    _ => None,
+                };
+                (d, mv)
+            })
+            .collect();
+        self.work_version = Some(field.version);
+        self.work_depth = field.depth;
+    }
+
+    /// One deal, played out for every candidate of the field taken over, in its order.
+    pub fn evaluate(&mut self, seed: u64) -> Vec<Packed> {
         // Every candidate faces the same deal, so the deal (and the inference behind it) is made once.
         let deal = self.view.sample(&mut Rng::new(seed), &mut self.sv, &self.opts);
         let ai = self.net.clone().filter(|_| self.own_turns);
-        for c in self.cands.iter_mut().filter(|c| c.alive) {
-            let r = match &c.mv {
-                Some(mv) => play_move_on(&self.view, deal.clone(), &mut self.sv, mv, self.depth, ai.as_deref()),
-                None => play_decision_on(&self.view, deal.clone(), &mut self.sv, c.decision, self.depth, ai.as_deref()),
-            };
-            c.scores.push(r.gap);
-            c.tie += r.tie as i64;
-            c.win += r.win as f64;
-            c.own += r.own as i64;
-            c.finish += r.finish as u32;
-            c.open += r.opened as u32;
-            c.opp_finish += r.opp_finish as u32;
-            c.deckout += r.deckout as u32;
-            c.next_takes += r.next_takes as u32;
-            if let Some(p) = r.last_draw {
-                c.last_draw[p as usize] += 1;
+        let depth = self.work_depth;
+        self.work
+            .iter()
+            .map(|(d, mv)| {
+                pack(&match mv {
+                    Some(mv) => play_move_on(&self.view, deal.clone(), &mut self.sv, mv, depth, ai.as_deref()),
+                    None => play_decision_on(&self.view, deal.clone(), &mut self.sv, *d, depth, ai.as_deref()),
+                })
+            })
+            .collect()
+    }
+
+    /// Take in deals played for field `version`. Deals that miss a candidate now alive are dropped.
+    pub fn absorb(&mut self, version: u32, deals: &[Vec<Packed>]) {
+        let Some(field) = self.sent.iter().find(|f| f.version == version).cloned() else {
+            return;
+        };
+        let place: std::collections::HashMap<Decision, usize> = field.cands.iter().enumerate().map(|(i, &d)| (d, i)).collect();
+        for results in deals {
+            if field.depth != self.depth || results.len() != field.cands.len() {
+                return;
+            }
+            let at: Option<Vec<usize>> = self
+                .cands
+                .iter()
+                .filter(|c| c.alive)
+                .map(|c| place.get(&c.decision).copied())
+                .collect();
+            let Some(at) = at else { return };
+            self.iter += 1;
+            for (c, i) in self.cands.iter_mut().filter(|c| c.alive).zip(at) {
+                let [gap, tie, own, win, flags] = results[i];
+                c.scores.push(gap);
+                c.tie += tie as i64;
+                c.own += own as i64;
+                c.win += win as f64 / 1e6;
+                c.finish += (flags & 1) as u32;
+                c.open += (flags >> 1 & 1) as u32;
+                c.opp_finish += (flags >> 2 & 1) as u32;
+                c.deckout += (flags >> 3 & 1) as u32;
+                c.next_takes += (flags >> 4 & 1) as u32;
+                if flags >> 5 > 0 {
+                    c.last_draw[(flags >> 5) as usize - 1] += 1;
+                }
+            }
+            if self.screening {
+                self.screen();
+            } else if self.iter >= self.next_prune {
+                self.next_prune = self.iter + (self.iter / 16).max(4);
+                self.prune();
+                self.deepen();
             }
         }
     }
@@ -656,14 +774,13 @@ impl Analyzer {
     pub fn step(&mut self, iterations: usize) {
         self.rate();
         for _ in 0..iterations {
-            self.sample_once();
-            if self.screening {
-                self.screen();
+            if self.work_version != Some(self.version) {
+                let field = self.field();
+                self.set_field(&field);
             }
-        }
-        if !self.screening {
-            self.prune();
-            self.deepen();
+            let seed = self.seed.wrapping_add(self.iter.wrapping_mul(0x2545_F491_4F6C_DD1D));
+            let results = self.evaluate(seed);
+            self.absorb(self.version, &[results]);
         }
     }
 
@@ -685,9 +802,7 @@ impl Analyzer {
         for c in &mut self.cands {
             *c = blank(c.decision, c.mv.take());
         }
-        // A report must never go out with empty statistics.
-        self.sample_once();
-        self.sample_once();
+        self.version += 1;
     }
 
     /// Successive halving over all positions on the same deals, so that none is dropped unseen.
@@ -697,6 +812,7 @@ impl Analyzer {
             return;
         }
         self.next_cut *= 2;
+        self.version += 1;
         let field = self.cands.len();
         let keep = (if field > 500 { field / 3 } else { field / 2 }).max(SCREEN_KEEP);
         let w = self.prior_weight;
@@ -759,6 +875,7 @@ impl Analyzer {
             }
             if d > 3.5 * se + GAP_SCALE {
                 c.alive = false;
+                self.version += 1;
             }
         }
     }
@@ -766,6 +883,16 @@ impl Analyzer {
     pub fn report(&self) -> Report {
         let b = self.best_alive();
         let best_scores = b.map(|b| self.cands[b].scores.clone()).unwrap_or_default();
+        // How much better than the leader each rival could still turn out to be.
+        let (mut doubt, mut close) = (0f64, false);
+        for (i, c) in self.cands.iter().enumerate() {
+            if c.alive && Some(i) != b {
+                let (d, se) = paired(&c.scores, &best_scores);
+                doubt = doubt.max(2.0 * se - d);
+                close |= d < 2.0 * se;
+            }
+        }
+        let settled = !self.screening && best_scores.len() >= SETTLE_AFTER && doubt < SETTLE_WITHIN * GAP_SCALE;
         let mut order: Vec<usize> = (0..self.cands.len()).collect();
         order.sort_by(|&a, &b| {
             let (x, y) = (&self.cands[a], &self.cands[b]);
@@ -808,6 +935,8 @@ impl Analyzer {
             truncated: self.truncated,
             deep: self.depth > 0,
             model: self.net.is_some() && self.own_turns,
+            settled,
+            close,
         }
     }
 }
@@ -1203,67 +1332,5 @@ pub fn public_view(g: &Game, phase: Phase, taken: Option<Tile>) -> View {
         phase,
         taken,
         stakes: g.stakes,
-    }
-}
-
-/// Combine reports from independent analyzers of the same position (one per worker thread).
-pub fn merge_reports(reports: &[Report]) -> Report {
-    let mut out: Vec<CandReport> = Vec::new();
-    for r in reports {
-        for c in &r.candidates {
-            let Some(m) = out.iter_mut().find(|m| m.decision == c.decision) else {
-                let mut first = c.clone();
-                first.diff_se = if c.diff_se.is_finite() {
-                    (c.diff_se * c.n as f64).powi(2)
-                } else {
-                    f64::INFINITY
-                };
-                out.push(first);
-                continue;
-            };
-            let (a, b) = (m.n as f64, c.n as f64);
-            let total = (a + b).max(1.0);
-            let mix = |x: f64, y: f64| (x * a + y * b) / total;
-            m.mean = if c.n == 0 {
-                m.mean
-            } else if m.n == 0 {
-                c.mean
-            } else {
-                mix(m.mean, c.mean)
-            };
-            m.own = mix(m.own, c.own);
-            m.p_finish = mix(m.p_finish, c.p_finish);
-            m.p_open = mix(m.p_open, c.p_open);
-            m.p_opp_finish = mix(m.p_opp_finish, c.p_opp_finish);
-            m.p_deckout = mix(m.p_deckout, c.p_deckout);
-            m.p_next_takes = mix(m.p_next_takes, c.p_next_takes);
-            for (x, &y) in m.p_last_draw.iter_mut().zip(&c.p_last_draw) {
-                *x = mix(*x, y);
-            }
-            m.p_win = m.p_win.zip(c.p_win).map(|(x, y)| mix(x, y));
-            m.diff_se += if c.diff_se.is_finite() {
-                (c.diff_se * b).powi(2)
-            } else {
-                f64::INFINITY
-            };
-            m.n += c.n;
-            m.alive |= c.alive;
-            if m.mv.is_none() {
-                m.mv = c.mv.clone();
-            }
-        }
-    }
-    for m in &mut out {
-        m.diff_se = if m.n > 0 { m.diff_se.sqrt() / m.n as f64 } else { f64::INFINITY };
-    }
-    out.sort_by(|a, b| b.alive.cmp(&a.alive).then(a.mean.total_cmp(&b.mean)));
-    Report {
-        iterations: reports.iter().map(|r| r.iterations).sum(),
-        candidates: out,
-        positions: reports.iter().map(|r| r.positions).max().unwrap_or(0),
-        screening: reports.iter().all(|r| r.screening),
-        truncated: reports.iter().any(|r| r.truncated),
-        deep: reports.iter().any(|r| r.deep),
-        model: reports.iter().any(|r| r.model),
     }
 }

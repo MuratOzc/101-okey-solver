@@ -1,4 +1,4 @@
-use okey_engine::analysis::{Analyzer, Options, Report, View};
+use okey_engine::analysis::{Analyzer, Field, Options, Packed, View};
 use okey_engine::net::Net;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -18,6 +18,11 @@ enum Req {
         options: Options,
         #[serde(default)]
         model: bool,
+        field: Field,
+    },
+    Field {
+        generation: u32,
+        field: Field,
     },
     Stop,
 }
@@ -25,17 +30,17 @@ enum Req {
 #[derive(Serialize)]
 struct Resp {
     generation: u32,
-    report: Option<Report>,
+    version: u32,
+    deals: Vec<Vec<Packed>>,
     error: Option<String>,
-    done: bool,
-    ms: f64,
 }
 
 struct Job {
     generation: u32,
     an: Analyzer,
-    batch: usize,
-    started: f64,
+    version: u32,
+    seed: u64,
+    played: u64,
 }
 
 thread_local! {
@@ -51,10 +56,7 @@ fn network(bytes: &[u8]) -> Option<Arc<Net>> {
 }
 
 const PLAY_ON_DISCARDS: usize = 5;
-
-const MAX_ITERATIONS: u64 = 4000;
-const MAX_MS: f64 = 60_000.0;
-const TARGET_TICK_MS: f64 = 150.0;
+const TICK_MS: f64 = 50.0;
 
 fn scope() -> DedicatedWorkerGlobalScope {
     js_sys::global().unchecked_into()
@@ -80,29 +82,22 @@ fn tick(generation: u32) {
         let mut j = j.borrow_mut();
         let job = j.as_mut().filter(|job| job.generation == generation)?;
         let t0 = now();
-        job.an.step(job.batch);
-        let dt = now() - t0;
-        if dt < TARGET_TICK_MS / 2.0 {
-            job.batch = (job.batch * 2).min(4096);
-        } else if dt > TARGET_TICK_MS * 2.0 && job.batch > 1 {
-            job.batch /= 2;
+        let mut deals = Vec::new();
+        while deals.is_empty() || now() - t0 < TICK_MS {
+            let seed = job.seed.wrapping_add(job.played.wrapping_mul(0x2545_F491_4F6C_DD1D));
+            job.played += 1;
+            deals.push(job.an.evaluate(seed));
         }
-        let report = job.an.report();
-        let ms = now() - job.started;
-        let done = report.iterations >= MAX_ITERATIONS || ms > MAX_MS;
         Some(Resp {
             generation,
-            report: Some(report),
+            version: job.version,
+            deals,
             error: None,
-            done,
-            ms,
         })
     });
     if let Some(r) = resp {
         post(&r);
-        if !r.done {
-            schedule(generation);
-        }
+        schedule(generation);
     }
 }
 
@@ -117,6 +112,7 @@ fn main() {
                 seed,
                 options,
                 model,
+                field,
             }) => match Analyzer::with_options(view, seed, options) {
                 Ok(mut an) => {
                     for net in [&NET, &TEAM_NET] {
@@ -124,12 +120,14 @@ fn main() {
                             an.use_model(net, 0.0, true);
                         }
                     }
+                    an.set_field(&field);
                     JOB.with(|j| {
                         *j.borrow_mut() = Some(Job {
                             generation,
                             an,
-                            batch: 2,
-                            started: now(),
+                            version: field.version,
+                            seed,
+                            played: 0,
                         })
                     });
                     schedule(generation);
@@ -138,20 +136,24 @@ fn main() {
                     JOB.with(|j| *j.borrow_mut() = None);
                     post(&Resp {
                         generation,
-                        report: None,
+                        version: 0,
+                        deals: vec![],
                         error: Some(error),
-                        done: true,
-                        ms: 0.0,
                     });
                 }
             },
+            Ok(Req::Field { generation, field }) => JOB.with(|j| {
+                if let Some(job) = j.borrow_mut().as_mut().filter(|job| job.generation == generation) {
+                    job.an.set_field(&field);
+                    job.version = field.version;
+                }
+            }),
             Ok(Req::Stop) => JOB.with(|j| *j.borrow_mut() = None),
             Err(err) => post(&Resp {
                 generation: 0,
-                report: None,
+                version: 0,
+                deals: vec![],
                 error: Some(err.to_string()),
-                done: true,
-                ms: 0.0,
             }),
         }
     });
