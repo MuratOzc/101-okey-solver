@@ -365,11 +365,12 @@ fn App() -> impl IntoView {
             </aside>
             <Show when=move || ctx.show_settings.get()>
                 <Modal title="Ayarlar" open=ctx.show_settings>
+                    <settings::Basics/>
                     <details class="matchbox" open=move || st.with(|s| s.match_on)>
                         <summary>"Maç durumu"</summary>
                         <MatchBox/>
                     </details>
-                    <settings::Settings/>
+                    <settings::Advanced/>
                 </Modal>
             </Show>
             <Show when=move || ctx.show_info.get()>

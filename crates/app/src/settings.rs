@@ -25,12 +25,10 @@ macro_rules! n {
 
 fn bools() -> Vec<(&'static str, Vec<(&'static str, GetB, SetB)>)> {
     vec![
-        ("Genel", vec![b!("Eşli oyun (karşılıklı takım)", partners)]),
         (
             "Açma",
             vec![
                 b!("Çiftle açma var", pairs_enabled),
-                b!("Katlamalı: her açılışta çıta yükselir", katlamali),
                 b!("Okey + tek taş = çift", joker_pairs_with_single),
                 b!("İki okey = çift", two_jokers_pair),
                 b!("Gösterge (dağıtımda geldiyse) herhangi bir taşla çift", gosterge_pair),
@@ -116,7 +114,7 @@ fn nums() -> Vec<(&'static str, Vec<(&'static str, GetN, SetN)>)> {
 }
 
 #[component]
-pub fn Settings() -> impl IntoView {
+pub fn Basics() -> impl IntoView {
     let ctx = expect_context::<Ctx>();
     let st = ctx.st;
     let set_rules = move |f: Box<dyn FnOnce(&mut Rules)>| {
@@ -127,19 +125,46 @@ pub fn Settings() -> impl IntoView {
     };
     view! {
         <div class="settings">
-            <h3>"Yapay zekâ"</h3>
+            <h3>"Oyun"</h3>
+            <div class="seg">
+                <button class="btn light" class:on=move || st.with(|s| !s.rules.partners)
+                    on:click=move |_| set_rules(Box::new(|r| r.partners = false))>"Tekli"</button>
+                <button class="btn light" class:on=move || st.with(|s| s.rules.partners)
+                    on:click=move |_| set_rules(Box::new(|r| r.partners = true))>"Eşli"</button>
+            </div>
+            <label class="opt">
+                <input type="checkbox"
+                    prop:checked=move || st.with(|s| s.rules.katlamali)
+                    on:change=move |ev| { let v = event_target_checked(&ev); set_rules(Box::new(move |r| r.katlamali = v)) }
+                />
+                "Katlamalı"
+            </label>
             <label class="opt">
                 <input type="checkbox"
                     prop:checked=move || st.with(|s| s.model)
                     on:change=move |ev| { let v = event_target_checked(&ev); ctx.act(move |s| { s.model = v; Ok(()) }) }
                 />
-                "Simülasyonlarda sonraki turlarımı eğitilmiş model oynasın"
+                "Yapay zekâ"
             </label>
-            <p class="muted">"Daha isabetli ama daha yavaş. Tekli ve eşli oyunda, varsayılan kurallarda ve maç durumu kapalıyken devreye girer."</p>
-            <div class="rules-head">
-                <h3>"Kurallar"</h3>
-                <button class="btn light" on:click=move |_| set_rules(Box::new(|r| *r = Rules::default()))>"Varsayılana dön"</button>
-            </div>
+            <p class="muted">"Simülasyonlarda sonraki turlarını eğitilmiş model oynar; daha isabetli ama daha yavaş. Kurallar değiştirilmişse ya da maç durumu açıkken devreye girmez."</p>
+        </div>
+    }
+}
+
+#[component]
+pub fn Advanced() -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
+    let st = ctx.st;
+    let set_rules = move |f: Box<dyn FnOnce(&mut Rules)>| {
+        ctx.act(|s| {
+            f(&mut s.rules);
+            Ok(())
+        })
+    };
+    view! {
+        <details class="advanced">
+            <summary>"Masa kuralları"</summary>
+            <p class="muted">"Varsayılanlar senin masanın kuralları. Yalnızca farklı bir masada oynuyorsan değiştir."</p>
             {bools().into_iter().map(|(title, items)| view! {
                 <h4>{title}</h4>
                 {items.into_iter().map(|(label, get, set)| view! {
@@ -178,6 +203,7 @@ pub fn Settings() -> impl IntoView {
                     </label>
                 }).collect_view()}
             }).collect_view()}
-        </div>
+            <button class="btn light wide" on:click=move |_| set_rules(Box::new(|r| *r = Rules::default()))>"Varsayılan kurallara dön"</button>
+        </details>
     }
 }

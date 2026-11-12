@@ -528,3 +528,7 @@ details.matchbox.inline { padding: 8px 10px; border-radius: 10px; background: va
 }
 
 .plan-note { color: var(--good); font-size: 12px; font-weight: 700; }
+
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.mults { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
+details.advanced { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
