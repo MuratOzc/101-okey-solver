@@ -159,4 +159,5 @@ fn main() {
     });
     scope().set_onmessage(Some(onmsg.as_ref().unchecked_ref()));
     onmsg.forget();
+    let _ = scope().post_message(&JsValue::from_str("ready"));
 }

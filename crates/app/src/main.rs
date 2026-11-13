@@ -60,6 +60,9 @@ enum Req<'a> {
 struct Boss {
     generation: u32,
     an: Analyzer,
+    view: okey_engine::analysis::View,
+    model: bool,
+    base: u64,
     sent: u32,
     started: f64,
     shown_at: f64,
@@ -117,35 +120,54 @@ fn stop_all() {
     send_all(|_| serde_json::to_string(&Req::Stop).ok());
 }
 
+fn start_msg(boss: &Boss, field: &Field, stream: usize) -> Option<String> {
+    serde_json::to_string(&Req::Start {
+        generation: boss.generation,
+        view: &boss.view,
+        seed: boss.base.wrapping_add((stream as u64 + 1) * 0x9E37_79B9),
+        options: Options::default(),
+        model: boss.model,
+        field,
+    })
+    .ok()
+}
+
 fn start_all(generation: u32, view: &okey_engine::analysis::View, model: bool) -> Result<(), String> {
     let now = js_sys::Date::now();
     let base = now as u64;
-    let options = Options::default();
-    let mut an = Analyzer::with_options(view.clone(), base, options)?;
+    let mut an = Analyzer::with_options(view.clone(), base, Options::default())?;
     let field = an.field();
-    send_all(|i| {
-        serde_json::to_string(&Req::Start {
-            generation,
-            view,
-            seed: base.wrapping_add((i as u64 + 1) * 0x9E37_79B9),
-            options,
-            model,
-            field: &field,
-        })
-        .ok()
-    });
-    BOSS.with(|b| {
-        *b.borrow_mut() = Some(Boss {
-            generation,
-            an,
-            sent: field.version,
-            started: now,
-            shown_at: 0.0,
-            shown: None,
-            done: false,
-        })
-    });
+    let boss = Boss {
+        generation,
+        an,
+        view: view.clone(),
+        model,
+        base,
+        sent: field.version,
+        started: now,
+        shown_at: 0.0,
+        shown: None,
+        done: false,
+    };
+    send_all(|i| start_msg(&boss, &field, i));
+    BOSS.with(|b| *b.borrow_mut() = Some(boss));
     Ok(())
+}
+
+// A worker takes messages only once its wasm is loaded, so a start sent before that never reached it.
+fn start_late(i: usize) {
+    BOSS.with(|b| {
+        let mut b = b.borrow_mut();
+        let Some(boss) = b.as_mut().filter(|boss| !boss.done) else { return };
+        let field = boss.an.field();
+        WORKERS.with(|ws| {
+            let ws = ws.borrow();
+            // Its own stream of deals, in case the first start did arrive and those deals are already counted.
+            if let (Some(w), Some(j)) = (ws.get(i), start_msg(boss, &field, ws.len() + i)) {
+                let _ = w.post_message(&JsValue::from_str(&j));
+            }
+        });
+    });
 }
 
 /// Keep the recommendation on screen while it is within the noise of the new leader.
@@ -394,10 +416,14 @@ fn App() -> impl IntoView {
     };
     provide_context(ctx);
 
-    for _ in 0..worker_count() {
+    for i in 0..worker_count() {
         let Ok(w) = Worker::new("./worker_loader.js") else { break };
         let onmsg = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
             let Some(s) = e.data().as_string() else { return };
+            if s == "ready" {
+                start_late(i);
+                return;
+            }
             let Ok(msg) = serde_json::from_str::<Played>(&s) else { return };
             if let Some(r) = played(msg) {
                 analysis.set(Some(r));
