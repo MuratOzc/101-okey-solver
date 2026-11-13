@@ -152,7 +152,9 @@ pub fn encode(g: &Game, sv: &mut Solver, me: u8, moment: Moment, full: bool) -> 
     let (mut okeys, mut melds, mut laid) = ([0u8; 4], [0u8; 4], 0u32);
     for m in &g.table.melds {
         let r = ((m.owner + 4 - me) % 4) as usize;
-        okeys[r] += m.shape.jokers();
+        for by in m.okey_layers() {
+            okeys[((by + 4 - me) % 4) as usize] += 1;
+        }
         melds[r] += 1;
         laid += m.shape.len() as u32;
     }

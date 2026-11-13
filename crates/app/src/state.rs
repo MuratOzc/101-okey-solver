@@ -5,7 +5,7 @@ use okey_engine::moves::Move;
 use okey_engine::rng::Rng;
 use okey_engine::rules::Rules;
 use okey_engine::stakes::Stakes;
-use okey_engine::table::{JokerSlot, LayOption, Table, TableMeld, classify};
+use okey_engine::table::{JokerSlot, LayOption, Side, Table, TableMeld, classify};
 use okey_engine::tile::*;
 use serde::{Deserialize, Serialize};
 
@@ -627,8 +627,11 @@ impl State {
         if !self.lay_options(idx).contains(&o) {
             return Err("Bu taş bu pere işlenemez".into());
         }
-        if self.table.lay_off_on(idx, o.tile, Some(o.side), &self.rules).is_none() {
+        let Some(at) = self.table.lay_off_on(idx, o.tile, Some(o.side), &self.rules) else {
             return Err("Bu taş bu pere işlenemez".into());
+        };
+        if o.tile == JOKER {
+            self.table.melds[idx].okey_from(self.turn, at);
         }
         self.spend(&[o.tile])
     }
@@ -646,17 +649,28 @@ impl State {
             .collect()
     }
 
+    /// Who would be charged if the current player took the okeys of this slot.
+    pub fn okey_losers(&self, slot: &JokerSlot) -> Vec<u8> {
+        let mate = |p: u8| p == self.turn || (self.rules.partners && p == (self.turn + 2) % 4);
+        let mut table = self.table.clone();
+        table
+            .swap_joker(slot, self.turn)
+            .into_iter()
+            .flatten()
+            .filter(|&p| !mate(p))
+            .collect()
+    }
+
     pub fn swap(&mut self, slot: &JokerSlot) -> R {
         if !self.swap_options(slot.meld).contains(slot) {
             return Err("Bu perden okey alınamaz".into());
         }
         let tiles = slot.tiles.clone();
         self.spend(&tiles)?;
-        let owner = self.table.melds[slot.meld].owner;
-        if owner != self.turn && !(self.rules.partners && owner == (self.turn + 2) % 4) {
-            self.penalties[owner as usize] += self.rules.okey_lost_penalty;
+        for loser in self.okey_losers(slot) {
+            self.penalties[loser as usize] += self.rules.okey_lost_penalty;
         }
-        self.table.swap_joker(slot);
+        self.table.swap_joker(slot, self.turn);
         for _ in 0..slot.jokers {
             if self.turn == 0 {
                 self.hand.push(JOKER);
@@ -689,7 +703,11 @@ impl State {
         let tiles = if okey { vec![t, JOKER] } else { vec![t, t] };
         self.spend(&tiles)?;
         self.table.pairs_added[owner as usize] += 1;
-        self.table.melds.push(TableMeld::new(owner, Shape::Pair { tile: t, joker: okey }));
+        let mut meld = TableMeld::new(owner, Shape::Pair { tile: t, joker: okey });
+        if okey {
+            meld.okey_from(self.turn, Side::Group);
+        }
+        self.table.melds.push(meld);
         Ok(())
     }
 

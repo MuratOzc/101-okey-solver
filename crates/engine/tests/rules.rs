@@ -1114,3 +1114,27 @@ fn generator_lays_tiles_directly_instead_of_through_an_okey_swap() {
         "taking back an okey laid this turn is the same position as laying the tiles themselves"
     );
 }
+
+#[test]
+fn an_okey_is_paid_for_by_whoever_laid_it_not_by_the_owner_of_the_meld() {
+    let lay = |p: u8| {
+        let mut g = game(["K13 OK Si3 Si5", "K13 Si3", "Si3 Si4", "Si3 Si4"]);
+        for q in 0..4 {
+            g.players[q].opened = Opened::Melds;
+        }
+        let run = put(&mut g, 1, "K10 K11 K12");
+        g.table.new_turn();
+        let acts = [Act::Layoff {
+            meld: run,
+            tile: JOKER,
+            side: Side::High,
+        }];
+        g.play_acts(0, &acts, None).expect("an okey on the end of another player's run");
+        g.table.new_turn();
+        let slot = g.table.joker_slots(&g.rules).remove(0);
+        g.do_swap(p, &slot);
+        g.players.map(|pl| pl.penalty)
+    };
+    assert_eq!(lay(0), [0, 0, 0, 0], "taking back the okey I laid costs nobody anything");
+    assert_eq!(lay(1), [101, 0, 0, 0], "the owner of the run takes my okey: I laid it, I pay");
+}

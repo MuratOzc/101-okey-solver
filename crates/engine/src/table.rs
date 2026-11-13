@@ -15,6 +15,9 @@ pub struct TableMeld {
     /// Laid down during the current turn.
     #[serde(default)]
     pub fresh: bool,
+    /// Okeys here that someone other than the owner laid: who, and the run position (0 outside runs).
+    #[serde(default)]
+    pub lent: [Option<(u8, u8)>; 2],
 }
 
 impl TableMeld {
@@ -25,6 +28,7 @@ impl TableMeld {
             added_lo: 0,
             added_hi: 0,
             fresh: false,
+            lent: [None; 2],
         }
     }
 
@@ -38,6 +42,28 @@ impl TableMeld {
     // A run laid this turn and grown past the longest new run would be that longer run laid at once.
     fn full(&self, rules: &Rules) -> bool {
         self.fresh && self.shape.len() >= rules.max_run_len
+    }
+
+    /// Record that `by` laid the okey now at that end of the run, or in the group or pair.
+    pub fn okey_from(&mut self, by: u8, side: Side) {
+        if by == self.owner {
+            return;
+        }
+        let at = match (self.shape, side) {
+            (Shape::Run { lo, .. }, Side::Low) => lo,
+            (Shape::Run { hi, .. }, Side::High) => hi,
+            _ => 0,
+        };
+        if let Some(free) = self.lent.iter_mut().find(|l| l.is_none()) {
+            *free = Some((by, at));
+        }
+    }
+
+    /// Who laid each okey of this meld.
+    pub fn okey_layers(&self) -> Vec<u8> {
+        let mut by: Vec<u8> = self.lent.iter().flatten().map(|l| l.0).collect();
+        by.resize((self.shape.jokers() as usize).max(by.len()), self.owner);
+        by
     }
 }
 
@@ -192,17 +218,18 @@ impl Table {
         v
     }
 
-    /// Put the slot's natural tiles into the meld, removing its okeys.
-    pub fn swap_joker(&mut self, slot: &JokerSlot) {
-        let m = &mut self.melds[slot.meld].shape;
-        match m {
+    /// Put the slot's natural tiles into the meld, removing its okeys. Returns who had laid each okey
+    /// `taker` gets; where the okeys cannot be told apart, the taker's own come first.
+    pub fn swap_joker(&mut self, slot: &JokerSlot, taker: u8) -> [Option<u8>; 2] {
+        let m = &mut self.melds[slot.meld];
+        let mut at = 0;
+        match &mut m.shape {
             Shape::Run { jokers, color, .. } => {
-                for p in 1..=14u8 {
-                    if *jokers >> p & 1 == 1 && pos_tile(*color, p) == slot.tiles[0] {
-                        *jokers &= !(1 << p);
-                        return;
-                    }
-                }
+                let Some(p) = (1..=14u8).find(|&p| *jokers >> p & 1 == 1 && pos_tile(*color, p) == slot.tiles[0]) else {
+                    return [None; 2];
+                };
+                *jokers &= !(1 << p);
+                at = p;
             }
             Shape::Group { colors, jokers, .. } => {
                 for &t in &slot.tiles {
@@ -211,8 +238,20 @@ impl Table {
                 *jokers -= slot.jokers;
             }
             Shape::Pair { joker, .. } => *joker = false,
-            _ => {}
+            _ => return [None; 2],
         }
+        let mut from = [None; 2];
+        for f in from.iter_mut().take(slot.jokers as usize) {
+            let here = |l: &Option<(u8, u8)>| l.is_some_and(|l| l.1 == at);
+            let pick = (0..2)
+                .find(|&k| here(&m.lent[k]) && m.lent[k].is_some_and(|l| l.0 == taker))
+                .or_else(|| (0..2).find(|&k| here(&m.lent[k])));
+            *f = Some(match pick {
+                Some(k) => m.lent[k].take().map_or(m.owner, |l| l.0),
+                None => m.owner,
+            });
+        }
+        from
     }
 
     /// Lay a single tile onto the first meld it extends, respecting per-turn end limits.

@@ -1212,6 +1212,11 @@ fn option_label(o: &LayOption) -> String {
     }
 }
 
+fn okey_fine(losers: &[u8], s: &State) -> String {
+    let who: Vec<&str> = losers.iter().map(|&p| SEAT_NAMES[p as usize]).collect();
+    format!("okeyi koyana {} ceza ({})", s.rules.okey_lost_penalty, who.join(", "))
+}
+
 fn meld_menu(ctx: Ctx, s: &State, idx: usize) -> impl IntoView + use<> {
     let okey = okey_tile(s);
     let me = s.turn == 0;
@@ -1223,8 +1228,6 @@ fn meld_menu(ctx: Ctx, s: &State, idx: usize) -> impl IntoView + use<> {
     let swaps: Vec<JokerSlot> = s.swap_options(idx);
     let pair = m.shape.is_pair() && s.can_add_pair(m.owner);
     let owner = m.owner;
-    let foreign = owner != s.turn && !(s.rules.partners && owner == (s.turn + 2) % 4);
-    let penalty = s.rules.okey_lost_penalty;
     let nothing = lays.is_empty() && swaps.is_empty() && !pair;
     view! {
         <h2>{if me { "Bu pere ne yapıyorsun?".to_string() } else { format!("{who} bu pere ne yaptı?") }}</h2>
@@ -1238,10 +1241,12 @@ fn meld_menu(ctx: Ctx, s: &State, idx: usize) -> impl IntoView + use<> {
             {swaps.into_iter().map(|slot| {
                 let give = slot.tiles.clone();
                 let n = slot.jokers;
+                let losers = s.okey_losers(&slot);
+                let pen = (!losers.is_empty()).then(|| format!(" · {}", okey_fine(&losers, s)));
                 view! {
                     <button class="btn light opt" on:click=move |_| ctx.act(|s| s.swap(&slot))>
                         {tiles_view(&give, okey)}
-                        <span>{format!("koyup {} al", if n > 1 { "2 okeyi" } else { "okeyi" })}{foreign.then(|| format!(" · per sahibine {penalty} ceza"))}</span>
+                        <span>{format!("koyup {} al", if n > 1 { "2 okeyi" } else { "okeyi" })}{pen}</span>
                     </button>
                 }
             }).collect_view()}
@@ -1493,7 +1498,7 @@ fn plan_title(steps: &[Step], s: &State) -> String {
     parts.join(" · ")
 }
 
-fn step_view(step: &Step, n: usize, okey: Option<Tile>, s: &State, kept: &[Tile]) -> impl IntoView + use<> {
+fn step_view(step: &Step, n: usize, okey: Option<Tile>, s: &State) -> impl IntoView + use<> {
     let dot = |label: String, style: String| view! { <span class="dot num" style=style>{label}</span> };
     let color_of = |n: usize| format!("background:{}", GROUP_COLORS[(n - 1) % GROUP_COLORS.len()]);
     match step.clone() {
@@ -1517,26 +1522,22 @@ fn step_view(step: &Step, n: usize, okey: Option<Tile>, s: &State, kept: &[Tile]
                 side => format!("perinin {}", side_text(side)),
             };
             let note = (tile == JOKER && stands_for != JOKER).then(|| format!("okey = {}", name(stands_for)));
-            let foreign = owner != 0 && !(s.rules.partners && owner == 2);
-            let trap = (tile == JOKER && foreign && s.rules.joker_retrieve && kept.contains(&stands_for)).then(|| {
-                format!(
-                    "Sonraki tur elindeki {} taşını koyup okeyi geri alırsın: {} perinden okey kaptığı için ona {} ceza yazılır.",
-                    name(stands_for),
-                    SEAT_NAMES[owner as usize],
-                    s.rules.okey_lost_penalty
-                )
-            });
             view! {
                 <li>{dot(n.to_string(), "background:#fff;color:#111;box-shadow:inset 0 0 0 1.5px #111".into())}
                     <span class="row">{tile_view(tile, okey)}</span>
-                    <span class="what">{format!("{whose} {place}")}<span class="row mini">{tiles_view(&onto, okey)}</span>{note.map(|x| view! { <small>{x}</small> })}{trap.map(|x| view! { <b class="plan-note">{x}</b> })}</span>
+                    <span class="what">{format!("{whose} {place}")}<span class="row mini">{tiles_view(&onto, okey)}</span>{note.map(|x| view! { <small>{x}</small> })}</span>
                 </li>
             }
             .into_any()
         }
-        Step::Swap { owner, onto, give, jokers } => {
-            let foreign = owner != 0 && !(s.rules.partners && owner == 2);
-            let pen = foreign.then(|| format!(" · ona {} ceza", s.rules.okey_lost_penalty));
+        Step::Swap {
+            owner,
+            onto,
+            give,
+            jokers,
+            losers,
+        } => {
+            let pen = (!losers.is_empty()).then(|| format!(" · {}", okey_fine(&losers, s)));
             view! {
                 <li>{dot(n.to_string(), "background:#c084fc".into())}
                     <span class="row">{tiles_view(&give, okey)}</span>
@@ -1636,12 +1637,6 @@ fn Plan() -> impl IntoView {
             };
             format!("{} senaryo{}{cut}{ai}", rep.iterations, if r.done { "" } else { "…" })
         });
-        let kept = arrange(&s.hand, Some(&steps))
-            .into_iter()
-            .flatten()
-            .filter(|&(_, m)| m == Mark::Plain)
-            .map(|(t, _)| t)
-            .collect::<Vec<_>>();
         let mut k = 0;
         let list = steps
             .iter()
@@ -1649,7 +1644,7 @@ fn Plan() -> impl IntoView {
                 if !matches!(x, Step::Discard { .. }) {
                     k += 1;
                 }
-                step_view(x, k, okey, &s, &kept)
+                step_view(x, k, okey, &s)
             })
             .collect_view();
         let alts = report.clone().map(|r| alternatives(ctx, &r, &s));

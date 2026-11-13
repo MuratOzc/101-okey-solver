@@ -59,7 +59,11 @@ impl Game {
             self.players[p as usize].hand[t as usize] -= 1;
             self.seen[t as usize] += 1;
         }
-        self.table.melds.push(TableMeld::laid(owner, shape));
+        let mut meld = TableMeld::laid(owner, shape);
+        for _ in 0..shape.jokers() {
+            meld.okey_from(p, Side::Group);
+        }
+        self.table.melds.push(meld);
         if let Some(log) = &mut self.log {
             log.push(Step::Meld { shape, owner });
         }
@@ -152,7 +156,10 @@ impl Game {
                         return Err(());
                     }
                     let before = self.table.melds.get(*meld).ok_or(())?.clone();
-                    self.table.lay_off_on(*meld, *tile, Some(*side), &r).ok_or(())?;
+                    let at = self.table.lay_off_on(*meld, *tile, Some(*side), &r).ok_or(())?;
+                    if *tile == JOKER {
+                        self.table.melds[*meld].okey_from(p, at);
+                    }
                     self.players[pi].hand[*tile as usize] -= 1;
                     self.seen[*tile as usize] += 1;
                     used_taken |= taken == Some(*tile);

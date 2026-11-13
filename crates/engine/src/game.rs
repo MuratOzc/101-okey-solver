@@ -71,11 +71,14 @@ pub enum Step {
         side: Side,
         stands_for: Tile,
     },
+    /// `losers` are the players who laid the okeys and are charged for losing them.
     Swap {
         owner: u8,
         onto: Vec<Tile>,
         give: Vec<Tile>,
         jokers: u8,
+        #[serde(default)]
+        losers: Vec<u8>,
     },
     Discard {
         tile: Tile,
@@ -231,7 +234,11 @@ impl Game {
             for t in s.tiles() {
                 self.seen[t as usize] += 1;
             }
-            self.table.melds.push(TableMeld::laid(owner, s));
+            let mut meld = TableMeld::laid(owner, s);
+            for _ in 0..s.jokers() {
+                meld.okey_from(p, Side::Group);
+            }
+            self.table.melds.push(meld);
             if let Some(log) = &mut self.log {
                 log.push(Step::Meld { shape: s, owner });
             }
@@ -246,6 +253,9 @@ impl Game {
         };
         self.players[p as usize].hand[t as usize] -= 1;
         self.seen[t as usize] += 1;
+        if t == JOKER {
+            self.table.melds[i].okey_from(p, side);
+        }
         if let (Some(log), Some(before)) = (&mut self.log, before) {
             let stands_for = match (before[i].shape, side) {
                 (Shape::Run { color, lo, .. }, Side::Low) => pos_tile(color, lo - 1),
@@ -420,22 +430,11 @@ impl Game {
         }
     }
 
-    /// Trade natural tiles for the okey(s) of a table meld. Losing an okey to an opponent
-    /// costs the meld's owner a penalty; within a team it is free.
+    /// Trade natural tiles for the okey(s) of a table meld. Whoever laid an okey pays for losing it
+    /// to an opponent; taking back one's own or a partner's is free.
     pub fn do_swap(&mut self, p: u8, s: &JokerSlot) {
         let owner = self.table.melds[s.meld].owner;
-        if let Some(log) = &mut self.log {
-            let onto = self.table.melds[s.meld].shape.tiles();
-            log.push(Step::Swap {
-                owner,
-                onto,
-                give: s.tiles.clone(),
-                jokers: s.jokers,
-            });
-        }
-        if !self.same_team(owner, p) {
-            self.players[owner as usize].penalty += self.rules.okey_lost_penalty;
-        }
+        let onto = self.log.is_some().then(|| self.table.melds[s.meld].shape.tiles());
         let h = &mut self.players[p as usize].hand;
         for &t in &s.tiles {
             h[t as usize] -= 1;
@@ -443,7 +442,25 @@ impl Game {
         }
         h[JOKER as usize] += s.jokers;
         self.seen[JOKER as usize] -= s.jokers;
-        self.table.swap_joker(s);
+        let losers: Vec<u8> = self
+            .table
+            .swap_joker(s, p)
+            .into_iter()
+            .flatten()
+            .filter(|&l| !self.same_team(l, p))
+            .collect();
+        for &l in &losers {
+            self.players[l as usize].penalty += self.rules.okey_lost_penalty;
+        }
+        if let (Some(log), Some(onto)) = (&mut self.log, onto) {
+            log.push(Step::Swap {
+                owner,
+                onto,
+                give: s.tiles.clone(),
+                jokers: s.jokers,
+                losers,
+            });
+        }
     }
 
     pub(crate) fn finish(&mut self, p: u8, last: Tile, elden: bool) -> Outcome {

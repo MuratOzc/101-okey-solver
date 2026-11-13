@@ -37,7 +37,7 @@ Kuralların hepsi "Kurallar" ekranından değiştirilebilir. Varsayılanlar:
 | Bitiş | Son taş atılarak bitilir; biten −101 |
 | El sonu | Açmayan 101, açan elindeki taşların toplamı, çift açan iki katı, elde kalan okey +101 |
 | Katlar | Okey atarak bitme, elden bitme, çiftle bitme: her biri ×2 (birbiriyle çarpılır) |
-| Cezalar | İşlek taş atmak 101, okey atmak 101, perindeki okeyi rakibe kaptırmak 101 (perin sahibine) |
+| Cezalar | İşlek taş atmak 101, okey atmak 101, masaya koyduğun okeyi rakibe kaptırmak 101 (okeyi koyana; kendi koyduğunu geri almak cezasız) |
 | Eşli | Ortağın bitince takıma −202 |
 
 ## Öneri nasıl bulunuyor
