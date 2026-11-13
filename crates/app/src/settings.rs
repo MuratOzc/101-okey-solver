@@ -132,6 +132,13 @@ pub fn Basics() -> impl IntoView {
                 <button class="btn light" class:on=move || st.with(|s| s.rules.partners)
                     on:click=move |_| set_rules(Box::new(|r| r.partners = true))>"Eşli"</button>
             </div>
+            <h3>"Per sayımı"</h3>
+            <div class="seg">
+                <button class="btn light" class:on=move || st.with(|s| !s.yan)
+                    on:click=move |_| ctx.act(|s| { s.yan = false; Ok(()) })>{move || st.with(|s| s.rules.open_min.to_string())}</button>
+                <button class="btn light" class:on=move || st.with(|s| s.yan)
+                    on:click=move |_| ctx.act(|s| { s.yan = true; Ok(()) })>{move || st.with(|s| crate::state::count(s.rules.open_min, true))}</button>
+            </div>
             <label class="opt">
                 <input type="checkbox"
                     prop:checked=move || st.with(|s| s.rules.katlamali)

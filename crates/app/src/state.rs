@@ -56,6 +56,9 @@ pub struct State {
     pub mode: Mode,
     pub result: Option<String>,
     pub model: bool,
+    /// Show meld totals the way the table counts them: thirds, with what is left over as "yan".
+    #[serde(default)]
+    pub yan: bool,
     pub hand_no: u8,
     pub hands_total: u8,
     pub totals: [i32; 4],
@@ -89,6 +92,7 @@ impl Default for State {
             mode: Mode::Gosterge,
             result: None,
             model: true,
+            yan: false,
             hand_no: 1,
             hands_total: 11,
             totals: [0; 4],
@@ -105,6 +109,15 @@ impl Default for State {
 }
 
 type R = Result<(), String>;
+
+/// A meld total as the table counts it: 101, or "33 yan 2".
+pub fn count(v: i32, yan: bool) -> String {
+    match (yan, v.div_euclid(3), v.rem_euclid(3)) {
+        (false, ..) => v.to_string(),
+        (true, base, 0) => base.to_string(),
+        (true, base, left) => format!("{base} yan {left}"),
+    }
+}
 
 // examples/season.rs: playing for the match before the last two hands won no more matches and cost points.
 const MATCH_HANDS: u8 = 2;
@@ -133,6 +146,7 @@ impl State {
             rules: self.rules.clone(),
             starter: (self.starter + 1) % 4,
             model: self.model,
+            yan: self.yan,
             hand_no: (self.hand_no + 1).min(self.hands_total),
             hands_total: self.hands_total,
             totals,
@@ -145,6 +159,7 @@ impl State {
         State {
             rules: self.rules.clone(),
             model: self.model,
+            yan: self.yan,
             hands_total: self.hands_total,
             ..State::default()
         }
@@ -539,6 +554,14 @@ impl State {
     }
 
     /// "87 / 101" style progress for an opening in progress.
+    pub fn total(&self, v: i32) -> String {
+        count(v, self.yan)
+    }
+
+    pub fn points(&self, v: i32) -> String {
+        if self.yan { self.total(v) } else { format!("{v} puan") }
+    }
+
     pub fn opening_progress(&self) -> Option<String> {
         if !self.opened_this_turn {
             return None;
@@ -546,7 +569,7 @@ impl State {
         let (meld, pair) = self.opening_need();
         Some(match self.cur().opened {
             Opened::Pairs => format!("Açılış: {} / {} çift", self.cur().open_value, pair),
-            _ => format!("Açılış: {} / {} puan", self.cur().open_value, meld),
+            _ => format!("Açılış: {} / {}", self.total(self.cur().open_value), self.points(meld)),
         })
     }
 
@@ -1134,5 +1157,14 @@ mod tests {
             s.hand.len(),
             21 - s.table.melds.iter().map(|m| m.shape.len() as usize).sum::<usize>()
         );
+    }
+
+    #[test]
+    fn meld_totals_in_thirds_with_the_rest_as_yan() {
+        assert_eq!(count(101, false), "101");
+        assert_eq!(count(101, true), "33 yan 2");
+        assert_eq!(count(102, true), "34");
+        assert_eq!(count(117, true), "39");
+        assert_eq!(count(103, true), "34 yan 1");
     }
 }

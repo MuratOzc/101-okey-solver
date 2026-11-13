@@ -566,7 +566,7 @@ fn Seats() -> impl IntoView {
                     let count = pv.hand_len.unwrap_or(0);
                     let badge = match pv.opened {
                         Opened::No => None,
-                        Opened::Melds => Some(format!("açtı {}", pv.open_value)),
+                        Opened::Melds => Some(format!("açtı {}", s.total(pv.open_value))),
                         Opened::Pairs => Some(format!("{} çift", pv.open_value)),
                     };
                     let cur = s.stage == Stage::Play && s.turn == p;
@@ -761,7 +761,7 @@ fn Rack() -> impl IntoView {
                 let pv = &s.players[0];
                 let opened = match pv.opened {
                     Opened::No => None,
-                    Opened::Melds => Some(format!("açtın {}", pv.open_value)),
+                    Opened::Melds => Some(format!("açtın {}", s.total(pv.open_value))),
                     Opened::Pairs => Some(format!("{} çift açtın", pv.open_value)),
                 };
                 let head = view! {
@@ -771,7 +771,7 @@ fn Rack() -> impl IntoView {
                         {opened.map(|o| view! { <span class="open">{o}</span> })}
                         {ctx.hand.get().filter(|_| pv.opened == Opened::No).map(|h| view! {
                             <span class="reach" title="Elindeki taşlarla en iyi dizilişte">
-                                <span class:open={h.open_value >= h.meld_req}>{format!("per {} / {}", h.open_value, h.meld_req)}</span>
+                                <span class:open={h.open_value >= h.meld_req}>{format!("per {} / {}", s.total(h.open_value), s.total(h.meld_req))}</span>
                                 " · "
                                 <span class:open={h.pairs >= h.pair_req}>{format!("çift {} / {}", h.pairs, h.pair_req)}</span>
                             </span>
@@ -1143,7 +1143,7 @@ fn opp_act(ctx: Ctx, s: &State) -> impl IntoView + use<> {
         let what = if pv.opened == Opened::Pairs {
             format!("{} çift", pv.open_value)
         } else {
-            format!("{} puan", pv.open_value)
+            s.points(pv.open_value)
         };
         view! { <div class="good">{format!("Bu tur açtı: {what}")}</div> }
     });
@@ -1178,7 +1178,7 @@ fn meld_entry(ctx: Ctx, s: &State) -> impl IntoView + use<> {
     let ok = problem.is_none();
     let status = match (&problem, s.buffer_shape()) {
         (None, Some(sh)) if sh.is_pair() => "Çift ✓".to_string(),
-        (None, Some(sh)) => format!("{} ✓ · {} puan", shape_label(&sh), sh.open_value(&s.rules)),
+        (None, Some(sh)) => format!("{} ✓ · {}", shape_label(&sh), s.points(sh.open_value(&s.rules))),
         (Some(p), _) => p.clone(),
         _ => String::new(),
     };
@@ -1285,7 +1285,7 @@ fn manual(ctx: Ctx, s: &State) -> impl IntoView + use<> {
         (0, _, _) => "İstakadan taşlara dokun.".to_string(),
         (1, _, _) => "Tek taş seçili: atabilirsin. İşlemek için masadaki pere dokun.".to_string(),
         (_, None, Some(sh)) if sh.is_pair() => "Çift ✓".to_string(),
-        (_, None, Some(sh)) => format!("{} ✓ · {} puan", shape_label(&sh), sh.open_value(&s.rules)),
+        (_, None, Some(sh)) => format!("{} ✓ · {}", shape_label(&sh), s.points(sh.open_value(&s.rules))),
         (_, Some(p), _) => p.clone(),
         _ => String::new(),
     };
@@ -1461,7 +1461,7 @@ fn plan_title(steps: &[Step], s: &State) -> String {
             parts.push(format!("Çiftle aç ({})", melds.len()));
         } else if unopened {
             let total: i32 = melds.iter().map(|m| m.open_value(&s.rules)).sum();
-            parts.push(format!("Aç ({total})"));
+            parts.push(format!("Aç ({})", s.total(total)));
         } else {
             parts.push(format!("{} per indir", melds.len()));
         }
@@ -1507,7 +1507,7 @@ fn step_view(step: &Step, n: usize, okey: Option<Tile>, s: &State) -> impl IntoV
             let head = if shape.is_pair() {
                 if owner == 0 { "çift".to_string() } else { format!("{} çiftlerine", SEAT_OWNER[owner as usize]) }
             } else {
-                format!("{} · {}", shape_label(&shape).to_lowercase(), shape.open_value(&s.rules))
+                format!("{} · {}", shape_label(&shape).to_lowercase(), s.total(shape.open_value(&s.rules)))
             };
             let note = okey_note(&shape);
             view! {
@@ -1701,7 +1701,7 @@ fn move_short(mv: &Move, s: &State) -> String {
     match (unopened, melds, pairs) {
         (true, 0, 0) => parts.push("Açma".to_string()),
         (true, 0, n) => parts.push(format!("{n} çiftle aç")),
-        (true, _, _) => parts.push(format!("Aç {value}")),
+        (true, _, _) => parts.push(format!("Aç {}", s.total(value))),
         (false, 0, 0) => {}
         (false, 0, n) => parts.push(format!("{n} çift indir")),
         (false, n, _) => parts.push(format!("{n} per indir")),
@@ -1882,9 +1882,10 @@ fn HandInfo() -> impl IntoView {
     move || {
         let okey = okey_tile(&st.get());
         ctx.hand.get().map(|r: HandReport| {
-            let opened = st.with(|s| s.players[0].opened);
+            let (opened, yan) = st.with(|s| (s.players[0].opened, s.yan));
+            let total = move |v: i32| state::count(v, yan);
             let head = match opened {
-                Opened::No => format!("Perle açış: {} / {} · Çift: {} / {}", r.open_value, r.meld_req, r.pairs, r.pair_req),
+                Opened::No => format!("Perle açış: {} / {} · Çift: {} / {}", total(r.open_value), total(r.meld_req), r.pairs, r.pair_req),
                 Opened::Melds => "Perle açtın.".to_string(),
                 Opened::Pairs => "Çiftle açtın.".to_string(),
             };
@@ -1896,7 +1897,7 @@ fn HandInfo() -> impl IntoView {
                 <p class="muted">"Taş × görülmemiş adet → gelirse açış değerin / çift sayın"</p>
                 <div class="outs">
                     {r.outs.iter().take(16).map(|o| view! {
-                        <span class="out">{tile_view(o.tile, okey)}<small>{format!("×{} → {} / {}ç", o.unseen, o.open_value, o.pairs)}</small></span>
+                        <span class="out">{tile_view(o.tile, okey)}<small>{format!("×{} → {} / {}ç", o.unseen, total(o.open_value), o.pairs)}</small></span>
                     }).collect_view()}
                 </div>
             }
