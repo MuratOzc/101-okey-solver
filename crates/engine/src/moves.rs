@@ -405,7 +405,15 @@ impl Gen<'_> {
             return;
         }
         let mut g = self.root.clone();
-        if g.play_acts(self.p, acts, self.taken).is_err() || g.hand_len(self.p) == 0 {
+        if g.play_acts(self.p, acts, self.taken).is_err() {
+            return;
+        }
+        self.record(&g, acts);
+    }
+
+    /// Record the position `g` that `acts` lead to.
+    fn record(&mut self, g: &Game, acts: &[Act]) {
+        if g.hand_len(self.p) == 0 {
             return;
         }
         let mut h = DefaultHasher::new();
@@ -492,7 +500,12 @@ impl Gen<'_> {
 
     /// Pairs handed to other players' pair areas.
     fn gifts(&mut self, g: &Game, acts: &mut Vec<Act>) {
-        self.push(acts);
+        // `g` was reached by these very steps; only a tile taken from the side needs them checked as a whole.
+        if self.taken.is_none() && !self.full() {
+            self.record(g, acts);
+        } else {
+            self.push(acts);
+        }
         let me = &g.players[self.p as usize];
         if me.opened != Opened::Melds || !g.rules.pairs_onto_pair_opener {
             return;
@@ -553,16 +566,21 @@ impl Gen<'_> {
                 return;
             }
             let extra: Vec<Act> = set.into_iter().map(Act::Meld).collect();
-            let mut g2 = g.clone();
-            if g2.play_acts(self.p, &extra, None).is_err() {
-                continue;
+            let mut laid = None;
+            if !extra.is_empty() {
+                let mut g2 = g.clone();
+                if g2.play_acts(self.p, &extra, None).is_err() {
+                    continue;
+                }
+                laid = Some(g2);
             }
+            let g2 = laid.as_ref().unwrap_or(g);
             let before = acts.len();
             acts.extend(extra);
             if can_layoff {
-                self.layoffs(&g2, 0, 0, 0, acts);
+                self.layoffs(g2, 0, 0, 0, acts);
             } else {
-                self.gifts(&g2, acts);
+                self.gifts(g2, acts);
             }
             acts.truncate(before);
         }
@@ -596,6 +614,13 @@ impl Gen<'_> {
 
 /// Every distinct position player `p` can reach this turn before discarding.
 pub fn generate(g: &Game, p: u8, taken: Option<Tile>, cap: usize) -> Generated {
+    // Every step below copies the game; the deck and the log play no part in what is legal.
+    let bare = Game {
+        deck: Vec::new(),
+        log: None,
+        ..g.clone()
+    };
+    let g = &bare;
     let mut me = Gen {
         root: g,
         p,
