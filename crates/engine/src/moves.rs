@@ -7,7 +7,7 @@ use crate::rules::Rules;
 use crate::table::{JokerSlot, Side, TableMeld};
 use crate::tile::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -378,7 +378,7 @@ struct Gen<'a> {
     p: u8,
     taken: Option<Tile>,
     cap: usize,
-    seen: HashSet<u64>,
+    seen: HashMap<u64, usize>,
     out: Vec<Vec<Act>>,
     truncated: bool,
 }
@@ -391,7 +391,8 @@ impl Gen<'_> {
         self.truncated
     }
 
-    /// Record a position if it is legal, leaves a tile to discard, and has not been reached another way.
+    /// Record a position if it is legal and leaves a tile to discard. Of several ways to the same position the
+    /// one with the fewest steps is kept.
     fn push(&mut self, acts: &[Act]) {
         if self.full() {
             return;
@@ -402,12 +403,17 @@ impl Gen<'_> {
         }
         let mut h = DefaultHasher::new();
         g.players[self.p as usize].hand.hash(&mut h);
-        for m in &g.table.melds {
-            (m.owner, m.shape).hash(&mut h);
-        }
+        let mut melds: Vec<(u8, Shape)> = g.table.melds.iter().map(|m| (m.owner, m.shape)).collect();
+        melds.sort_unstable();
+        melds.hash(&mut h);
         g.players.iter().for_each(|pl| pl.penalty.hash(&mut h));
-        if self.seen.insert(h.finish()) {
-            self.out.push(acts.to_vec());
+        match self.seen.get(&h.finish()) {
+            Some(&at) if acts.len() < self.out[at].len() => self.out[at] = acts.to_vec(),
+            Some(_) => {}
+            None => {
+                self.seen.insert(h.finish(), self.out.len());
+                self.out.push(acts.to_vec());
+            }
         }
     }
 
@@ -588,7 +594,7 @@ pub fn generate(g: &Game, p: u8, taken: Option<Tile>, cap: usize) -> Generated {
         p,
         taken,
         cap,
-        seen: HashSet::new(),
+        seen: HashMap::new(),
         out: Vec::new(),
         truncated: false,
     };

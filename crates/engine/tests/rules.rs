@@ -1098,3 +1098,19 @@ fn generator_opens_with_a_run_starting_right_after_a_group() {
         "the ones as a group, then K2-K3-K4: 102 with the taken S1"
     );
 }
+
+#[test]
+fn generator_lays_tiles_directly_instead_of_through_an_okey_swap() {
+    let g = game(["K13 S13 Si13 S12 M12 Si12 Si8 Si9 Si10 OK OK K2 K5", "", "", ""]);
+    let positions = generate(&g, 0, None, 5000).positions;
+    let plain = |acts: &&Vec<Act>| acts.len() == 3 && acts.iter().all(|a| matches!(a, Act::Meld(s) if s.jokers() == 0));
+    assert_eq!(
+        positions.iter().filter(plain).count(),
+        1,
+        "13s, 12s and Si8-Si9-Si10 straight from the hand"
+    );
+    assert!(
+        !positions.iter().any(|acts| acts.iter().any(|a| matches!(a, Act::Swap(_)))),
+        "taking back an okey laid this turn is the same position as laying the tiles themselves"
+    );
+}
