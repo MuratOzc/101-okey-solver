@@ -2,7 +2,7 @@
 
 use crate::game::{Game, Opened, Outcome, Step};
 use crate::meld::{Shape, Solver, pos_tile};
-use crate::pairs::pair_plan;
+use crate::pairs::{guarded, pair_plan};
 use crate::rules::Rules;
 use crate::table::{JokerSlot, Side, TableMeld};
 use crate::tile::*;
@@ -621,8 +621,11 @@ pub fn generate(g: &Game, p: u8, taken: Option<Tile>, cap: usize) -> Generated {
     meld_sets(&mut h, &g.rules, g.meld_req, cap, &mut openings);
     if g.rules.pairs_enabled {
         let gost = g.players[p as usize].gosterge_bonus.then_some(g.gosterge);
-        let pairs = pair_plan(&hand, &g.rules, gost).pairs;
-        openings.extend(subsets(&pairs, g.pair_req as usize, pairs.len(), 512));
+        let plan = pair_plan(&hand, &g.rules, gost);
+        openings.extend(subsets(&plan.pairs, g.pair_req as usize, plan.pairs.len(), 512));
+        if let Some(pairs) = guarded(&plan, &g.seen) {
+            openings.extend(subsets(&pairs, g.pair_req as usize, pairs.len(), 512));
+        }
     }
     for set in openings {
         if me.full() {

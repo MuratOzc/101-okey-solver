@@ -49,6 +49,49 @@ pub fn pair_plan(hand: &Counts, rules: &Rules, gosterge: Option<Tile>) -> PairPl
     PairPlan { pairs, rest }
 }
 
+/// The same number of pairs with each okey beside a tile whose twin is already out, as far as the hand has
+/// such singles: nobody can then lay the twin and take the okey. None when that changes nothing.
+pub fn guarded(plan: &PairPlan, seen: &Counts) -> Option<Vec<Shape>> {
+    let mut pool: Vec<Tile> = plan.rest.iter().copied().filter(|&t| t != JOKER).collect();
+    let (mut out, mut okeys, mut gost) = (Vec::new(), 0, None);
+    for &s in &plan.pairs {
+        match s {
+            Shape::Pair { tile, joker: true } if tile != JOKER => {
+                pool.push(tile);
+                okeys += 1;
+            }
+            Shape::GostergePair { gosterge, other } => {
+                pool.push(other);
+                gost = Some(gosterge);
+            }
+            s => out.push(s),
+        }
+    }
+    if okeys == 0 || !pool.iter().any(|&t| seen[t as usize] > 0) {
+        return None;
+    }
+    pool.sort_by_key(|&t| std::cmp::Reverse(num(t)));
+    for _ in 0..okeys {
+        let k = pool.iter().position(|&t| seen[t as usize] > 0).unwrap_or(0);
+        out.push(Shape::Pair {
+            tile: pool.remove(k),
+            joker: true,
+        });
+    }
+    if let Some(gosterge) = gost {
+        out.push(Shape::GostergePair {
+            gosterge,
+            other: pool.remove(0),
+        });
+    }
+    let sorted = |v: &[Shape]| {
+        let mut v = v.to_vec();
+        v.sort_unstable();
+        v
+    };
+    (sorted(&out) != sorted(&plan.pairs)).then_some(out)
+}
+
 /// How many pairs `pair_plan` would make and how many tiles it would leave, without building them.
 pub fn pair_stats(hand: &Counts, rules: &Rules, gosterge: Option<Tile>) -> (usize, usize) {
     let mut pairs = hand[..NNAT].iter().filter(|&&n| n == 2).count();

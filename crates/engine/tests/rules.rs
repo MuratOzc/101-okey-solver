@@ -1138,3 +1138,25 @@ fn an_okey_is_paid_for_by_whoever_laid_it_not_by_the_owner_of_the_meld() {
     assert_eq!(lay(0), [0, 0, 0, 0], "taking back the okey I laid costs nobody anything");
     assert_eq!(lay(1), [101, 0, 0, 0], "the owner of the run takes my okey: I laid it, I pay");
 }
+
+#[test]
+fn generator_offers_the_okey_beside_a_tile_whose_twin_is_out() {
+    let mut g = game(["K3 K3 K13 K13 S4 S4 Si1 Si1 M12 K9 M2 OK", "", "", ""]);
+    let with = |g: &Game, tile: &str| {
+        let want = Shape::Pair {
+            tile: t(tile),
+            joker: true,
+        };
+        generate(g, 0, None, 5000)
+            .positions
+            .iter()
+            .any(|acts| acts.contains(&Act::Meld(want)))
+    };
+    assert!(
+        with(&g, "M12") && !with(&g, "K9"),
+        "nothing is known to be out: the okey goes beside the highest single"
+    );
+    g.seen[t("K9") as usize] += 1;
+    assert!(with(&g, "K9"), "the other K9 is out, so an okey beside mine cannot be taken");
+    assert!(with(&g, "M12"), "shedding the higher tile stays on offer");
+}
