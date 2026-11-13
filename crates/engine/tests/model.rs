@@ -234,3 +234,46 @@ fn only_deals_played_to_the_end_count_toward_how_the_hand_ends() {
         "a match chance needs real scores"
     );
 }
+
+#[test]
+fn a_position_valued_from_a_near_one_gets_the_same_value() {
+    let rules = Rules::default();
+    let mut sv = Solver::new(&rules);
+    let net = random_net(11, false);
+    let mut worst = 0f32;
+    for seed in 0..40 {
+        let Some(g) = midgame(seed, 6 + seed as usize % 9) else { continue };
+        let me = g.current;
+        let base = encode(&g, &mut sv, me, Moment::After, net.full());
+        let near = net.near(&base);
+        let hand = g.players[me as usize].hand;
+        for t in (0..NIDS as Tile).filter(|&t| hand[t as usize] > 0) {
+            let mut a = g.clone();
+            a.discard(me, t);
+            let f = encode(&a, &mut sv, me, Moment::After, net.full());
+            worst = worst.max((net.value_near(&near, &f) - net.value(&f)).abs());
+        }
+    }
+    assert!(worst < 0.01, "off by {worst}");
+}
+
+#[test]
+fn the_player_among_all_moves_never_loses_or_invents_a_tile() {
+    let rules = Rules::default();
+    let mut sv = Solver::new(&rules);
+    let net = random_net(5, false);
+    for seed in 0..60u64 {
+        let mut g = Game::deal(&rules, &mut Rng::new(seed), (seed % 4) as u8);
+        let mut first = true;
+        let mut ended = false;
+        for _ in 0..400 {
+            ended = okey_engine::model::model_turn_all(&mut g, &mut sv, &net, first).is_some();
+            first = false;
+            assert_eq!(g.tile_count(), 106, "seed {seed}");
+            if ended {
+                break;
+            }
+        }
+        assert!(ended, "seed {seed}: the hand must end");
+    }
+}

@@ -3,6 +3,7 @@
 use crate::game::{Game, Opened, Outcome, Step};
 use crate::meld::{Shape, Solver, pos_tile};
 use crate::pairs::{guarded, pair_plan};
+use crate::rng::Rng;
 use crate::rules::Rules;
 use crate::table::{JokerSlot, Side, TableMeld};
 use crate::tile::*;
@@ -614,6 +615,16 @@ impl Gen<'_> {
 
 /// Every distinct position player `p` can reach this turn before discarding.
 pub fn generate(g: &Game, p: u8, taken: Option<Tile>, cap: usize) -> Generated {
+    generate_from(g, p, taken, cap, None)
+}
+
+/// As `generate`, but of more than `keep` ways to open only that many are followed up: the one laying
+/// the most tiles, the one laying the fewest, and a random draw of the others.
+pub fn generate_some(g: &Game, p: u8, taken: Option<Tile>, cap: usize, keep: usize, rng: &mut Rng) -> Generated {
+    generate_from(g, p, taken, cap, Some((keep, rng)))
+}
+
+fn generate_from(g: &Game, p: u8, taken: Option<Tile>, cap: usize, some: Option<(usize, &mut Rng)>) -> Generated {
     // Every step below copies the game; the deck and the log play no part in what is legal.
     let bare = Game {
         deck: Vec::new(),
@@ -651,6 +662,17 @@ pub fn generate(g: &Game, p: u8, taken: Option<Tile>, cap: usize) -> Generated {
         if let Some(pairs) = guarded(&plan, &g.seen) {
             openings.extend(subsets(&pairs, g.pair_req as usize, pairs.len(), 512));
         }
+    }
+    if let Some((keep, rng)) = some
+        && openings.len() > keep.max(2)
+    {
+        let tiles = |set: &Vec<Shape>| set.iter().map(|m| m.len() as u32).sum::<u32>();
+        let most = (0..openings.len()).max_by_key(|&k| tiles(&openings[k])).unwrap_or(0);
+        openings.swap(0, most);
+        let fewest = (1..openings.len()).min_by_key(|&k| tiles(&openings[k])).unwrap_or(1);
+        openings.swap(1, fewest);
+        rng.shuffle(&mut openings[2..]);
+        openings.truncate(keep.max(2));
     }
     for set in openings {
         if me.full() {

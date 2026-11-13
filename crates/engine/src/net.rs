@@ -10,6 +10,12 @@ struct Layer {
     bias: Vec<f32>,
 }
 
+/// One position's first-layer sums, for valuing positions that differ from it in a few inputs.
+pub struct Near {
+    feat: Feat,
+    sums: [f32; MAX_WIDTH],
+}
+
 pub struct Net {
     nbits: usize,
     nreal: usize,
@@ -95,7 +101,64 @@ impl Net {
 
     pub fn value(&self, f: &Feat) -> f32 {
         let mut a = [0f32; MAX_WIDTH];
-        let mut b = [0f32; MAX_WIDTH];
+        self.first_sums(f, &mut a);
+        self.rest_value(&mut a)
+    }
+
+    pub fn near(&self, f: &Feat) -> Near {
+        let mut near = Near {
+            feat: *f,
+            sums: [0f32; MAX_WIDTH],
+        };
+        self.first_sums(f, &mut near.sums);
+        near
+    }
+
+    /// The same as `value(f)` up to rounding, at the cost of the inputs in which `f` differs from `near`.
+    pub fn value_near(&self, near: &Near, f: &Feat) -> f32 {
+        let h = self.first.outputs;
+        let mut a = [0f32; MAX_WIDTH];
+        a[..h].copy_from_slice(&near.sums[..h]);
+        for (w, (&now, &was)) in f.bits.iter().zip(&near.feat.bits).enumerate() {
+            let mut changed = now ^ was;
+            while changed != 0 {
+                let bit = changed.trailing_zeros();
+                let i = w * 64 + bit as usize;
+                changed &= changed - 1;
+                if i >= self.nbits {
+                    break;
+                }
+                let col = &self.first.weights[i * h..(i + 1) * h];
+                if now >> bit & 1 == 1 {
+                    for (x, &c) in a[..h].iter_mut().zip(col) {
+                        *x += c;
+                    }
+                } else {
+                    for (x, &c) in a[..h].iter_mut().zip(col) {
+                        *x -= c;
+                    }
+                }
+            }
+        }
+        for (j, (&now, &was)) in f.real.iter().zip(&near.feat.real).enumerate().take(self.nreal) {
+            if now != was {
+                let x = (now as f32 - was as f32) / 255.0;
+                let i = self.nbits + j;
+                let col = &self.first.weights[i * h..(i + 1) * h];
+                for (y, &c) in a[..h].iter_mut().zip(col) {
+                    *y += x * c;
+                }
+            }
+        }
+        self.rest_value(&mut a)
+    }
+
+    /// How many inputs differ; a position far from `near` is cheaper to value from scratch.
+    pub fn distance(near: &Near, f: &Feat) -> u32 {
+        f.bits.iter().zip(&near.feat.bits).map(|(a, b)| (a ^ b).count_ones()).sum()
+    }
+
+    fn first_sums(&self, f: &Feat, a: &mut [f32; MAX_WIDTH]) {
         let h = self.first.outputs;
         a[..h].copy_from_slice(&self.first.bias);
         for (w, &bits) in f.bits.iter().enumerate() {
@@ -122,7 +185,11 @@ impl Net {
                 }
             }
         }
-        let mut width = h;
+    }
+
+    fn rest_value(&self, a: &mut [f32; MAX_WIDTH]) -> f32 {
+        let mut b = [0f32; MAX_WIDTH];
+        let mut width = self.first.outputs;
         for layer in &self.rest {
             let n = layer.outputs;
             b[..n].copy_from_slice(&layer.bias);
