@@ -378,7 +378,8 @@ fn late_results_count_only_for_what_is_still_alive() {
     let r = boss.report();
     assert_eq!(r.iterations, 200, "a field that only lost candidates keeps taking the old results");
     assert!(boss.version() > first.version, "200 deals prune something");
-    assert!(r.candidates.iter().any(|c| !c.alive && c.n < 200));
+    assert!(boss.field().cands.len() < first.cands.len(), "the pruned ones left the field");
+    assert!(r.candidates.iter().filter(|c| !c.alive).all(|c| c.n < 200));
     assert!(r.candidates.iter().filter(|c| c.alive).all(|c| c.n == 200));
     boss.absorb(first.version + 1000, &batch);
     assert_eq!(boss.report().iterations, 200, "results for a field never sent are ignored");

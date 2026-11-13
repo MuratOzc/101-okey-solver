@@ -1074,3 +1074,27 @@ fn a_run_laid_this_turn_cannot_grow_past_five_in_the_same_turn() {
         "next turn the run takes two per end again"
     );
 }
+
+#[test]
+fn generator_opens_with_a_run_starting_right_after_a_group() {
+    let g = game(["K1 S1 M1 K2 K3 K4 S7 S8 S9 M9 M10 M11 K12 M12 Si12 Si3 Si3", "", "", ""]);
+    let positions = generate(&g, 0, Some(t("S1")), 5000).positions;
+    let has = |acts: &Vec<Act>, want: &dyn Fn(&Shape) -> bool| acts.iter().any(|a| matches!(a, Act::Meld(s) if want(s)));
+    assert!(
+        positions.iter().any(|acts| {
+            has(acts, &|s| matches!(s, Shape::Group { num: 1, .. }))
+                && has(acts, &|s| {
+                    matches!(
+                        s,
+                        Shape::Run {
+                            color: 0,
+                            lo: 2,
+                            hi: 4,
+                            ..
+                        }
+                    )
+                })
+        }),
+        "the ones as a group, then K2-K3-K4: 102 with the taken S1"
+    );
+}

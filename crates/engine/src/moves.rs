@@ -292,7 +292,7 @@ fn meld_sets(counts: &mut Counts, rules: &Rules, min_value: i32, cap: usize, out
         counts: &mut Counts,
         rules: &Rules,
         start: usize,
-        floor: Option<Shape>,
+        floor: Option<(usize, Shape)>,
         cur: &mut Vec<Shape>,
         value: i32,
         min_value: i32,
@@ -313,13 +313,23 @@ fn meld_sets(counts: &mut Counts, rules: &Rules, min_value: i32, cap: usize, out
         }
         rec(counts, rules, i + 1, None, cur, value, min_value, cap, out);
         for m in melds_with(counts, i as Tile, rules) {
-            if floor.is_some_and(|f| m < f) {
+            if floor.is_some_and(|(at, f)| at == i && m < f) {
                 continue;
             }
             let tiles = m.tiles();
             tiles.iter().for_each(|&t| counts[t as usize] -= 1);
             cur.push(m);
-            rec(counts, rules, i, Some(m), cur, value + m.open_value(rules), min_value, cap, out);
+            rec(
+                counts,
+                rules,
+                i,
+                Some((i, m)),
+                cur,
+                value + m.open_value(rules),
+                min_value,
+                cap,
+                out,
+            );
             cur.pop();
             tiles.iter().for_each(|&t| counts[t as usize] += 1);
         }
