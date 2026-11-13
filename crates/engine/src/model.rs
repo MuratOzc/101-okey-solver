@@ -2,10 +2,9 @@ use crate::agent::Agent;
 use crate::features::{Feat, Moment, encode};
 use crate::game::{Game, OpenChoice, Opened, Outcome};
 use crate::meld::{Shape, Solver};
-use crate::moves::generate_some;
+use crate::moves::generate;
 use crate::net::{Near, Net};
 use crate::policy::Policy;
-use crate::rng::Rng;
 use crate::tile::*;
 use std::sync::Arc;
 
@@ -111,12 +110,6 @@ pub fn model_act_valued(g: &mut Game, sv: &mut Solver, net: &Net, taken: Option<
     }
 }
 
-/// Above this many moves in one turn, only the most promising positions have every discard compared.
-const SCREEN_ABOVE: usize = 60;
-const SCREEN_KEEP: usize = 6;
-const ALL_POSITIONS: usize = 3000;
-/// A hand that can open usually can in hundreds of nearly equal ways; this many of them are compared.
-const OPENINGS_TRIED: usize = 150;
 /// A position differing from the last fully valued one in more inputs than this is valued from scratch.
 const NEAR_ENOUGH: u32 = 48;
 
@@ -154,23 +147,19 @@ fn after_discard(a: &mut Game, sv: &mut Solver, valuer: &mut Valuer, p: u8, t: T
     v
 }
 
-/// The network's turn among every legal move, not only the ready-made plans. With very many moves the
-/// positions are first compared on one discard each, the one that looked best where every discard was tried.
+/// The network's turn among every legal move and every discard, penalised ones too. Nothing is skipped,
+/// sampled or capped: what is worth doing is for the network to find out.
 pub fn model_act_all(g: &mut Game, sv: &mut Solver, net: &Net, taken: Option<Tile>) -> (Option<Outcome>, Option<f32>) {
     let p = g.current;
     let pi = p as usize;
     let was_unopened = g.players[pi].opened == Opened::No;
     let mut valuer = Valuer { net, near: None };
-    let mut open: Vec<(Game, Vec<Tile>)> = Vec::new();
+    let found = generate(g, p, taken, usize::MAX).positions;
     let mut best: Option<(f32, usize, Tile)> = None;
     let mut finish: Option<(f32, Game, Outcome)> = None;
-    let seed = g.players[pi]
-        .hand
-        .iter()
-        .fold(g.deck.len() as u64, |h, &n| h.wrapping_mul(31).wrapping_add(n as u64));
-    for acts in generate_some(g, p, taken, ALL_POSITIONS, OPENINGS_TRIED, &mut Rng::new(seed)).positions {
+    for (k, acts) in found.iter().enumerate() {
         let mut a = g.clone();
-        let Ok(done) = a.play_acts(p, &acts, taken) else { continue };
+        let Ok(done) = a.play_acts(p, acts, taken) else { continue };
         let hand = a.players[pi].hand;
         let finishing = a.hand_len(p) == 1;
         if done.short_opening {
@@ -191,38 +180,11 @@ pub fn model_act_all(g: &mut Game, sv: &mut Solver, net: &Net, taken: Option<Til
             }
             continue;
         }
-        let mut ds: Vec<Tile> = (0..NIDS as Tile).filter(|&t| hand[t as usize] > 0).collect();
-        let cheapest = ds.iter().map(|&t| a.discard_penalty(p, t)).min().unwrap_or(0);
-        ds.retain(|&t| a.discard_penalty(p, t) == cheapest);
-        open.push((a, ds));
-    }
-    let mut every = |k: usize, open: &mut Vec<(Game, Vec<Tile>)>, liked: &mut [f32; NIDS], sv: &mut Solver, valuer: &mut Valuer| {
-        let (a, ds) = &mut open[k];
-        for &t in ds.iter() {
-            let v = after_discard(a, sv, valuer, p, t);
-            liked[t as usize] = liked[t as usize].min(v);
+        for t in (0..NIDS as Tile).filter(|&t| hand[t as usize] > 0) {
+            let v = after_discard(&mut a, sv, &mut valuer, p, t);
             if best.is_none_or(|b| v < b.0) {
                 best = Some((v, k, t));
             }
-        }
-    };
-    let mut liked = [f32::INFINITY; NIDS];
-    if open.iter().map(|(_, ds)| ds.len()).sum::<usize>() <= SCREEN_ABOVE {
-        for k in 0..open.len() {
-            every(k, &mut open, &mut liked, sv, &mut valuer);
-        }
-    } else {
-        every(0, &mut open, &mut liked, sv, &mut valuer);
-        let mut first: Vec<(f32, usize)> = Vec::with_capacity(open.len());
-        for (k, (a, ds)) in open.iter_mut().enumerate().skip(1) {
-            let Some(&t) = ds.iter().min_by(|&&x, &&y| liked[x as usize].total_cmp(&liked[y as usize])) else {
-                continue;
-            };
-            first.push((after_discard(a, sv, &mut valuer, p, t), k));
-        }
-        first.sort_by(|x, y| x.0.total_cmp(&y.0));
-        for &(_, k) in first.iter().take(SCREEN_KEEP) {
-            every(k, &mut open, &mut liked, sv, &mut valuer);
         }
     }
     match (finish, best) {
@@ -231,7 +193,8 @@ pub fn model_act_all(g: &mut Game, sv: &mut Solver, net: &Net, taken: Option<Til
             (Some(end), None)
         }
         (_, Some((v, k, t))) => {
-            let (mut a, _) = open.swap_remove(k);
+            let mut a = g.clone();
+            let _ = a.play_acts(p, &found[k], taken);
             a.discard(p, t);
             a.current = (p + 1) % 4;
             *g = a;
