@@ -82,6 +82,11 @@ pub fn draw_or_take(net: &Net, g: &Game, sv: &mut Solver, p: u8) -> Option<(f32,
 }
 
 pub fn model_act(g: &mut Game, sv: &mut Solver, net: &Net, taken: Option<Tile>) -> Option<Outcome> {
+    model_act_valued(g, sv, net, taken).0
+}
+
+/// Also returns what the network expects of the position it moved to, when the hand goes on from there.
+pub fn model_act_valued(g: &mut Game, sv: &mut Solver, net: &Net, taken: Option<Tile>) -> (Option<Outcome>, Option<f32>) {
     let p = g.current;
     g.policy[p as usize] = Policy::TUNED;
     let best = turns(g, sv, p, taken, net.discards)
@@ -89,37 +94,65 @@ pub fn model_act(g: &mut Game, sv: &mut Solver, net: &Net, taken: Option<Tile>) 
         .map(|t| (turn_value(net, sv, &t, p), t))
         .min_by(|a, b| a.0.total_cmp(&b.0));
     match best {
-        Some((_, t)) => {
+        Some((v, t)) => {
             *g = t.after;
-            t.end
+            let v = t.end.is_none().then_some(v);
+            (t.end, v)
         }
         None => {
             let end = g.bot_act(sv, p, taken);
             if end.is_none() {
                 g.current = (p + 1) % 4;
             }
-            end
+            (end, None)
         }
     }
 }
 
 pub fn model_turn(g: &mut Game, sv: &mut Solver, net: &Net, first: bool) -> Option<Outcome> {
+    model_turn_valued(g, sv, net, first).0
+}
+
+pub fn model_turn_valued(g: &mut Game, sv: &mut Solver, net: &Net, first: bool) -> (Option<Outcome>, Option<f32>) {
     let p = g.current;
     if !first && g.deck.is_empty() {
-        return Some(Outcome::DeckOut);
+        return (Some(Outcome::DeckOut), None);
     }
     g.table.new_turn();
     let mut taken = None;
     if !first {
         if draw_or_take(net, g, sv, p).is_some_and(|(draw, take)| take < draw) {
             taken = Some(g.take_top(p));
-        } else {
-            if g.draw(p).is_none() {
-                return Some(Outcome::DeckOut);
-            }
+        } else if g.draw(p).is_none() {
+            return (Some(Outcome::DeckOut), None);
         }
     }
-    model_act(g, sv, net, taken)
+    model_act_valued(g, sv, net, taken)
+}
+
+/// Plays on until seat `me` has moved `horizon` more times and returns, as the error, what the network
+/// expects of the position it then stands in. A hand that ends sooner, or a horizon of 0, gives the outcome.
+pub fn play_out_to(g: &mut Game, sv: &mut Solver, net: &Net, model: [bool; 4], me: u8, horizon: u8) -> Result<Outcome, f32> {
+    let mut left = horizon;
+    for _ in 0..400 {
+        let p = g.current;
+        let end = if p == me && left > 0 {
+            let (end, v) = model_turn_valued(g, sv, net, false);
+            left -= 1;
+            if let (None, Some(v), 0) = (&end, v, left) {
+                return Err(v);
+            }
+            end
+        } else if model[p as usize] {
+            model_turn(g, sv, net, false)
+        } else {
+            g.bot_turn(sv)
+        };
+        if let Some(end) = end {
+            return Ok(end);
+        }
+    }
+    Ok(Outcome::DeckOut)
 }
 
 pub fn play_out_with(g: &mut Game, sv: &mut Solver, net: &Net, model: [bool; 4]) -> Outcome {

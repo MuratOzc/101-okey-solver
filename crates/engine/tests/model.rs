@@ -172,10 +172,65 @@ fn the_search_uses_the_network_only_where_it_was_trained() {
     assert!(uses(true, &|v| v.rules.partners = true));
     assert!(!uses(true, &|_| {}));
     assert!(!uses(false, &|v| v.rules.katlamali = true));
-    assert!(!uses(false, &|v| {
-        v.stakes = Some(Stakes {
-            hands_left: 2,
-            behind: [50; 3],
-        })
-    }));
+    let stakes = |hands_left| {
+        move |v: &mut okey_engine::analysis::View| {
+            v.stakes = Some(Stakes {
+                hands_left,
+                behind: [50; 3],
+            })
+        }
+    };
+    assert!(
+        uses(false, &stakes(5)),
+        "playing for the match, the network still plays my later turns"
+    );
+    assert!(!uses(false, &stakes(1)), "but not in the last two hands");
+}
+
+#[test]
+fn only_deals_played_to_the_end_count_toward_how_the_hand_ends() {
+    let g = (0..50).find_map(|seed| midgame(seed, 4).filter(|g| g.current == 0)).unwrap();
+    let report = |horizon: u8, stakes: Option<Stakes>| {
+        let mut view = public_view(&g, Phase::BeforeDraw, None);
+        view.phase = Phase::AfterDraw;
+        view.hand.push(g.deck[0]);
+        view.deck_count -= 1;
+        view.stakes = stakes;
+        let mut a = Analyzer::with_options(
+            view,
+            1,
+            Options {
+                horizon,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        a.use_model(Arc::new(random_net(3, false)), 0.0, true);
+        a.step(60);
+        a.report()
+    };
+    let cut = report(1, None);
+    let best = &cut.candidates[0];
+    assert!(
+        best.whole > 0 && best.whole < best.n,
+        "{} of {} deals went to the end",
+        best.whole,
+        best.n
+    );
+    assert!(
+        cut.candidates
+            .iter()
+            .all(|c| c.p_finish <= 1.0 && c.p_last_draw.iter().sum::<f64>() <= 1.0 + 1e-9)
+    );
+    let full = report(0, None);
+    assert!(full.candidates.iter().all(|c| c.whole == c.n));
+    let behind = Stakes {
+        hands_left: 5,
+        behind: [50; 3],
+    };
+    let played_for_the_match = report(1, Some(behind));
+    assert!(
+        played_for_the_match.candidates.iter().all(|c| c.whole == c.n),
+        "a match chance needs real scores"
+    );
 }

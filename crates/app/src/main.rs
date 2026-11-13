@@ -334,6 +334,17 @@ fn pct(x: f64) -> String {
     format!("%{:.0}", x * 100.0)
 }
 
+// Only some simulated deals are played to the end of the hand; fewer than this say nothing about how it ends.
+const ENOUGH_ENDINGS: usize = 12;
+
+fn chance(x: f64) -> String {
+    match x * 100.0 {
+        p if !(1.0..=99.0).contains(&p) => format!("%{p:.2}"),
+        p if !(10.0..=90.0).contains(&p) => format!("%{p:.1}"),
+        p => format!("%{p:.0}"),
+    }
+}
+
 fn main() {
     console_error_panic_hook::set_once();
     mount_to_body(App);
@@ -1274,7 +1285,7 @@ fn find(r: &Report, d: Decision) -> Option<&CandReport> {
 }
 
 fn advantage(c: &CandReport) -> String {
-    let lead = -c.mean;
+    let lead = -c.gap;
     if lead >= 0.0 {
         format!("rakiplerden {lead:.0} puan önde")
     } else {
@@ -1335,7 +1346,7 @@ fn MyDraw() -> impl IntoView {
         };
         let sub = match (&draw, &take) {
             (Some(d), Some(t)) => match d.p_win.zip(t.p_win) {
-                Some((dw, tw)) => format!("Maçı kazanma {} · diğeri {}", pct(dw.max(tw)), pct(dw.min(tw))),
+                Some((dw, tw)) => format!("Maçı kazanma {} · diğeri {}", chance(dw.max(tw)), chance(dw.min(tw))),
                 None => format!("Diğerinden {:.1} puan daha iyi", (d.mean - t.mean).abs()),
             },
             (Some(_), None) if side.is_some() && !take_ok => "Yandaki taşı bu tur kullanamazsın, alınamaz.".to_string(),
@@ -1355,7 +1366,7 @@ fn MyDraw() -> impl IntoView {
             let take_last = last_if_all_draw(s.deck_count, false).map(|p| seat_name(&s, p));
             let draw_last = last_if_all_draw(s.deck_count, true).map(|p| seat_name(&s, p));
             let row = |label: &'static str, last: Option<String>, c: Option<&CandReport>| {
-                let sim = c.map(|c| {
+                let sim = c.filter(|c| c.whole >= ENOUGH_ENDINGS).map(|c| {
                     let reach: f64 = c.p_last_draw.iter().sum();
                     format!(
                         "Simülasyonda: {} · {} ihtimalle el ondan önce biter",
@@ -1542,14 +1553,29 @@ fn Plan() -> impl IntoView {
         let done = resp.as_ref().is_some_and(|r| r.done);
         let settled = done || report.as_ref().is_some_and(|r| r.settled);
         let close = report.as_ref().is_some_and(|r| r.close);
+        let doubt = report
+            .as_ref()
+            .filter(|r| r.iterations >= 100 && r.doubt.is_finite())
+            .map(|r| r.doubt);
+        let match_mode = cand.as_ref().is_some_and(|c| c.p_win.is_some());
         let state_note = if screening {
-            ("Bütün hamleler taranıyor, öneri değişebilir", "pending")
+            ("Bütün hamleler taranıyor, öneri değişebilir".to_string(), "pending")
         } else if !settled {
-            ("Hesap sürüyor, öneri değişebilir", "pending")
+            match doubt {
+                Some(d) if match_mode => (
+                    format!("Hesap sürüyor · başka bir hamle maç şansını en fazla %{:.1} artırabilir", d / 10.0),
+                    "pending",
+                ),
+                Some(d) => (
+                    format!("Hesap sürüyor · başka bir hamle en fazla {:.0} puan daha iyi olabilir", d.ceil()),
+                    "pending",
+                ),
+                None => ("Hesap sürüyor, öneri değişebilir".to_string(), "pending"),
+            }
         } else if close && is_best {
-            ("Kesinleşti · ilk iki seçenek neredeyse eşit", "done")
+            ("Kesinleşti · ilk iki seçenek neredeyse eşit".to_string(), "done")
         } else {
-            ("Kesinleşti", "done")
+            ("Kesinleşti".to_string(), "done")
         };
         let steps = ctx.steps.get().unwrap_or_default();
         let title = match &mv {
@@ -1558,14 +1584,15 @@ fn Plan() -> impl IntoView {
         };
         let stats = cand.as_ref().map(|c| {
             let aim = match c.p_win {
-                Some(w) => format!("Maçı kazanma {}", pct(w)),
+                Some(w) => format!("maçı kazanma {} · bu elde {}", chance(w), advantage(c)),
                 None => advantage(c),
             };
-            format!(
-                "{aim} · bitirme {} · sağdaki attığını alır {}",
-                pct(c.p_finish),
-                pct(c.p_next_takes)
-            )
+            let finish = if c.whole >= ENOUGH_ENDINGS {
+                format!(" · bitirme {}", pct(c.p_finish))
+            } else {
+                String::new()
+            };
+            format!("{aim}{finish} · sağdaki attığını alır {}", pct(c.p_next_takes))
         });
         let model_on = s.model && s.view().is_some_and(|v| model_fits(&v, v.rules.partners));
         let status = resp.as_ref().zip(report.as_ref()).map(|(r, rep)| {
@@ -1719,7 +1746,7 @@ fn alternatives(ctx: Ctx, report: &Report, s: &State) -> impl IntoView + use<> {
                 let behind = c.mean - top.mean;
                 let width = (100.0 - behind * 2.0).clamp(6.0, 100.0);
                 let note = match (c.p_win, top.p_win) {
-                    (Some(w), Some(_)) => pct(w),
+                    (Some(w), Some(_)) => chance(w),
                     _ if d == top.decision => "önerilen".to_string(),
                     _ if behind < 0.05 => "eşit".to_string(),
                     _ if c.alive => format!("{behind:.1} puan geride"),

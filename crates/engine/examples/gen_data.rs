@@ -1,7 +1,7 @@
 use okey_engine::features::{Feat, LAYOUT, Moment, NBITS, NREAL, encode};
 use okey_engine::game::{Game, Outcome};
 use okey_engine::meld::Solver;
-use okey_engine::model::{draw_or_take, model_act, play_out_with, turn_value, turns, written3};
+use okey_engine::model::{draw_or_take, model_act, play_out_to, turn_value, turns, written3};
 use okey_engine::net::Net;
 use okey_engine::policy::Policy;
 use okey_engine::rng::Rng;
@@ -10,7 +10,7 @@ use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-const USAGE: &str = "gen_data <out-dir> <hands> [seed] [network | -] [network seats %] [options kept] [wild %] [deck orders] [network plays on: 1 | 0] [discards it weighs when playing on] [partners: 1 | 0]";
+const USAGE: &str = "gen_data <out-dir> <hands> [seed] [network | -] [network seats %] [options kept] [wild %] [deck orders] [network plays on: 1 | 0] [discards it weighs when playing on] [partners: 1 | 0] [turns of the mover played on before the network's value is taken, 0 = to the end] [network also plays on for the other network seats: 1 | 0]";
 const Y_SCALE: f32 = 300.0;
 
 struct Setup<'a> {
@@ -19,6 +19,8 @@ struct Setup<'a> {
     wild: usize,
     decks: u64,
     carry_on: bool,
+    horizon: u8,
+    rivals: bool,
 }
 
 fn redealt(g: &Game, seed: u64, k: u64) -> Game {
@@ -38,22 +40,25 @@ fn record(out: &mut Vec<u8>, f: &Feat, y: f32, first: bool, draw: bool) {
     out.push(first as u8 | (draw as u8) << 1);
 }
 
-fn play_on(mut g: Game, sv: &mut Solver, s: &Setup, me: u8) -> i32 {
-    let end = match s.net.filter(|_| s.carry_on) {
+fn play_on(mut g: Game, sv: &mut Solver, s: &Setup, me: u8, model: [bool; 4]) -> i32 {
+    match s.net.filter(|_| s.carry_on) {
         Some(net) => {
-            let mut seats = [false; 4];
+            let mut seats = if s.rivals { model } else { [false; 4] };
             seats[me as usize] = true;
-            play_out_with(&mut g, sv, net, seats)
+            match play_out_to(&mut g, sv, net, seats, me, s.horizon) {
+                Ok(end) => g.gap3(&g.scores(&end), me),
+                Err(value) => value.round() as i32,
+            }
         }
         None => {
             g.policy[me as usize] = Policy::TUNED;
-            g.play_out(sv)
+            let end = g.play_out(sv);
+            g.gap3(&g.scores(&end), me)
         }
-    };
-    g.gap3(&g.scores(&end), me)
+    }
 }
 
-fn act_and_play_on(mut g: Game, sv: &mut Solver, s: &Setup, me: u8, taken: Option<u8>) -> i32 {
+fn act_and_play_on(mut g: Game, sv: &mut Solver, s: &Setup, me: u8, taken: Option<u8>, model: [bool; 4]) -> i32 {
     let end = match s.net.filter(|_| s.carry_on) {
         Some(net) => model_act(&mut g, sv, net, taken),
         None => {
@@ -67,7 +72,7 @@ fn act_and_play_on(mut g: Game, sv: &mut Solver, s: &Setup, me: u8, taken: Optio
     };
     match end {
         Some(end) => g.gap3(&g.scores(&end), me),
-        None => play_on(g, sv, s, me),
+        None => play_on(g, sv, s, me, model),
     }
 }
 
@@ -99,8 +104,8 @@ fn recorded_turn(
                     let mut drawn = redealt(g, seed, k);
                     let x = drawn.deck.pop().unwrap();
                     drawn.players[p as usize].hand[x as usize] += 1;
-                    y_draw += (act_and_play_on(drawn, sv, s, p, None) - written3(g, p)) as i64;
-                    y_take += (act_and_play_on(redealt(&took, seed, k), sv, s, p, Some(t)) - written3(&took, p)) as i64;
+                    y_draw += (act_and_play_on(drawn, sv, s, p, None, model) - written3(g, p)) as i64;
+                    y_take += (act_and_play_on(redealt(&took, seed, k), sv, s, p, Some(t), model) - written3(&took, p)) as i64;
                 }
                 record(
                     out,
@@ -178,7 +183,7 @@ fn recorded_turn(
         for (n, &i) in picked.iter().enumerate() {
             let after = &options[i].after;
             let y: i64 = (0..s.decks)
-                .map(|k| (play_on(redealt(after, seed, k), sv, s, p) - written3(after, p)) as i64)
+                .map(|k| (play_on(redealt(after, seed, k), sv, s, p, model) - written3(after, p)) as i64)
                 .sum();
             record(
                 out,
@@ -234,6 +239,8 @@ fn main() {
     let carry_on = args.get(9).is_none_or(|s| s != "0");
     std::fs::create_dir_all(&dir).expect("out-dir");
     let partners = args.get(11).is_some_and(|s| s == "1");
+    let horizon: u8 = args.get(12).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let rivals = args.get(13).is_some_and(|s| s == "1");
     let rules = Rules {
         partners,
         ..Rules::default()
@@ -263,6 +270,8 @@ fn main() {
                     wild,
                     decks,
                     carry_on,
+                    horizon,
+                    rivals,
                 };
                 let mut sv = Solver::new(rules);
                 let mut out = Vec::new();

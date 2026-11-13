@@ -91,7 +91,7 @@ impl Policy {
     };
 
     pub fn varied(rng: &mut crate::rng::Rng) -> Policy {
-        let mut pol = if rng.below(3) == 0 { Policy::BASIC } else { Policy::TUNED };
+        let mut pol = [Policy::BASIC, Policy::TUNED, Policy::FINISHER][rng.below(3)];
         let mut jitter = |x: f32| x * (0.6 + 0.8 * (rng.next_u64() >> 40) as f32 / (1u64 << 24) as f32);
         pol.w_adj = jitter(pol.w_adj);
         pol.w_gap = jitter(pol.w_gap);

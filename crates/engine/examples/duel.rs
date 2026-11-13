@@ -61,7 +61,10 @@ fn player(spec: &str, nets: &[(String, Arc<Net>)], seed: u64) -> Box<dyn Agent> 
             opts: Options::default(),
             iterations: n.parse().expect("iterations"),
             seed,
-            help: Help { peek: true, model: None },
+            help: Help {
+                peek: [false, true, true, true],
+                model: None,
+            },
         }),
         Some(("hybrid", rest)) => {
             let part: Vec<&str> = rest.splitn(4, ':').collect();
@@ -73,7 +76,7 @@ fn player(spec: &str, nets: &[(String, Arc<Net>)], seed: u64) -> Box<dyn Agent> 
                 iterations: part[0].parse().expect("iterations"),
                 seed,
                 help: Help {
-                    peek: false,
+                    peek: [false; 4],
                     model: Some((net, part[1].parse().expect("weight"), part[2] == "1")),
                 },
             })

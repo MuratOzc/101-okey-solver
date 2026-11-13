@@ -17,7 +17,7 @@ Ekran ikiye ayrılır: masa (rakipler, son attıkları taşlar, açılan perler,
 
 El bitince program puan tablosunu açar. Senin puanın elinden hesaplanır; açmayan rakiplere 101 yazılır, açanlar için elinde kalan puanı girersin (çift açanınki iki katı alınır). El boyunca yazılan cezalar (işlek, okey atma, okeyi kaptırma, 7 çiftle açma) ve bitirenin katları (okey atarak, elden, çiftle) kendiliğinden eklenir. "Yeni el" puanları maç toplamına ekler; üst çubukta el numarası ve liderle aradaki fark görünür. Toplamlar ayarlardan düzeltilebilir, yeni maç da oradan başlar.
 
-Program maç boyunca farkı açmaya oynar. Maçın son iki elinde hedefi **maçı kazanma ihtimali** olur: gerideyken risk alır (gerekirse cezalı taş atar, işe yaramayan bir bitişi reddeder), öndeyken garantiye oynar. O ellerde öneride puan farkı yerine "Maçı kazanma ihtimali %X" görünür ve yapay zekâ devre dışı kalır.
+Program maç boyunca farkı açmaya oynar. (Maç hedefini bütün ellere yaymayı ölçtüm: 5. elden sonra 400 geride, 300 önde ve sıfırdan başlayan maçlarda daha çok maç kazandırmadı, puan kaybettirdi; bu yüzden yalnızca son iki elde devrede.) Maçın son iki elinde hedefi **maçı kazanma ihtimali** olur: gerideyken risk alır (gerekirse cezalı taş atar, işe yaramayan bir bitişi reddeder), öndeyken garantiye oynar. O ellerde öneride puan farkı yerine "Maçı kazanma ihtimali %X" görünür ve yapay zekâ devre dışı kalır.
 
 ## Kurallar
 
@@ -44,17 +44,17 @@ Kuralların hepsi "Kurallar" ekranından değiştirilebilir. Varsayılanlar:
 
 1. **Bütün yasal hamleler üretilir.** Açma, çift açma, işleme, okey alma ve atılacak taşın her birleşimi tek tek çıkarılır. Çoğu turda bu 20 civarı hamledir, kalabalık ellerde binleri bulur.
 2. **Bilinmeyen taşlar rastgele dağıtılır.** Rakiplerin eli ve deste, görülmemiş taşlardan çekilir. Rakibin attığı ve almadığı taşlar elinde ne olabileceğine dair ipucu olarak kullanılır.
-3. **Her hamle aynı dağıtımlarda sonuna kadar oynatılır.** Rakipleri botlar, senin sonraki turlarını eğitilmiş model oynar; bütün hamleler aynı dağıtımları gördüğü için aradaki fark şansa değil hamleye aittir.
+3. **Her hamle aynı dağıtımlarda oynatılır.** Rakipleri botlar, senin bir sonraki turunu eğitilmiş model oynar; simülasyon orada kesilir ve elin geri kalanı için modelin biçtiği değer alınır. Bütün hamleler aynı dağıtımları gördüğü için aradaki fark şansa değil hamleye aittir. Dört dağıtımdan biri yine elin sonuna kadar oynanır; bitirme ihtimali ve son taşın kime gittiği yalnızca onlardan hesaplanır.
 4. **Açıkça geride kalan hamleler elenir**, kalan süre yakın olanlara harcanır.
 5. **Sıralama** el modunda ortalama puan farkına, maç modunda maçı kaybetme ihtimaline göre yapılır.
 
-Hesap tarayıcıda çekirdek sayısı − 1 işçiyle (en fazla 12) paralel yürür. İstatistiği tek bir yönetici tutar: işçiler yalnızca istenen hamleleri dağıtımlarda oynatıp sonucu gönderir, hangi hamlenin eleneceğine yönetici bütün işçilerin sonuçlarına bakarak karar verir. Öndeki hamleyi hiçbir rakibi bir iki puandan fazla geçemeyecek hâle gelince hesap durur. Derleme WebAssembly SIMD kullanır (Chrome 91, Firefox 89, Safari 16.4 ve sonrası).
+Hesap tarayıcıda çekirdek sayısı − 1 işçiyle (en fazla 12) paralel yürür. İstatistiği tek bir yönetici tutar: işçiler yalnızca istenen hamleleri dağıtımlarda oynatıp sonucu gönderir, hangi hamlenin eleneceğine yönetici bütün işçilerin sonuçlarına bakarak karar verir. Öndeki hamleyi hiçbir rakibi bir puandan fazla geçemeyecek hâle gelince (en az 600 dağıtımdan sonra, üç standart hatayla) hesap durur; 80 pozisyonda bu kuralın 12 000 dağıtımlık hesaba göre ölçülebilir bir kaybı çıkmadı. Derleme WebAssembly SIMD kullanır (Chrome 91, Firefox 89, Safari 16.4 ve sonrası).
 
 ## Yapay zekâ modeli
 
 Gördüğün durumu alıp "bu hamleden sonra el sonunda rakiplerle aramdaki puan farkı ne olur" sorusuna tek sayı veren bir değer ağı: 804 açık/kapalı girdi ve 23 sayı, ardından 256, 128 ve 64 hücrelik üç katman. Tarayıcıda çalışır. Rakiplerin elini ve destenin sırasını görmez; `tests/model.rs` bunu sınar.
 
-Simülasyonlarda senin sonraki turlarını o oynar (Kurallar ekranındaki "Yapay zekâ" kutusu, varsayılan açık). Tekli ve eşli oyun için ayrı birer ağ vardır (`crates/app/model/value.bin`, `partners.bin`). Varsayılan kurallarda devreye girer, maçın son iki eli hariç; diğer durumlarda arama eskisi gibi botla devam eder.
+Simülasyonlarda senin sonraki turunu o oynar ve vardığı durumu o değerlendirir (Kurallar ekranındaki "Yapay zekâ" kutusu, varsayılan açık). Tekli ve eşli oyun için ayrı birer ağ vardır (`crates/app/model/value.bin`, `partners.bin`). Varsayılan kurallarda devreye girer, maçın son iki eli hariç; diğer durumlarda arama eskisi gibi botla devam eder.
 
 **Nasıl eğitildi.** Farklı tarzda botlar el oynar; her kararda birkaç seçenek gerçek dağıtım üzerinde elin sonuna kadar oynatılır (deste 8 kez yeniden karıştırılıp ortalaması alınır) ve "oyuncunun gördüğü → sonuç" kaydedilir. İlk turda seçeneklerden sonrasını bot oynar; sonraki turlarda bir önceki model oynar, böylece model "ileride iyi oynayacağımı" varsayarak değer biçmeyi öğrenir. Tekli ve eşli için üçer tur yapıldı:
 
@@ -66,13 +66,39 @@ Simülasyonlarda senin sonraki turlarını o oynar (Kurallar ekranındaki "Yapay
 
 (Ayarlı bota göre el başına puan kazancı, eşlide takım farkı; 40 000 el, tekli ± 0,5, eşli ± 1,4.)
 
+Tekli ağ için dördüncü bir tur daha yapıldı. Bu turda seçenekler elin sonuna kadar değil, oyuncunun bir sonraki turuna kadar oynatıldı ve orada 3. tur modelinin değeri alındı (24 deste sırası); model koltuklarının rakip olduğu oyunlarda onları da model oynadı. Etiketler çok temizlendi: bir kararın seçenekleri arasındaki farkın açıklanabilen kısmı %28'den %57'ye çıktı. Oyun gücü ise az arttı: model tek başına bitmeye oynayan botlara karşı +23,4'ten +24,5'e (± 0,6), model masasına karşı +1,5 (± 0,7). Uygulamadaki tekli ağ bu 4. tur ağıdır.
+
 Girdilerde "herkes desteden çekerse son taş kime gelir" bilgisi de var; yandan taş alıp son taşı kaydırma taktiği için eklendi. Uygulamadaki sade tekli ağ bununla yeniden eğitilince tek başına +20,0'dan +21,2'ye (± 0,6) çıktı.
 
-**Denenip işe yaramayanlar.** Daha büyük ya da daha derin ağ, daha uzun eğitim, taşları renk × sayı ızgarası olarak işleyen mimari, veriyi iki katına çıkarmak, modelin görüşünü aramaya ön bilgi olarak vermek: hiçbiri ölçülebilir fark yaratmadı. Rakip elini tahmin eden ayrı bir ağ, gizli taşların yeri hakkındaki belirsizliğin yalnızca %4,7'sini giderebildi.
+**Denenip işe yaramayanlar.** Daha büyük ya da daha derin ağ (temiz etiketlerle de), daha uzun eğitim, taşları renk × sayı ızgarası olarak işleyen mimari, veriyi iki katına çıkarmak, modelin görüşünü aramaya ön bilgi olarak vermek: hiçbiri ölçülebilir fark yaratmadı. Daha küçük ağlar 1–3,5 puan kaybettirdi. Simülasyonda rakipleri de modelin oynaması, model masasına karşı bile fark yaratmadı (+0,4 ± 3,7). Simülasyonu bir yerine iki tur sonra kesmek ve çizim girdili büyük ağı kullanmak 640 dağıtımda aynı sonucu verdi (−2,7 ± 3,2 ve +0,3 ± 3,1).
+
+**Rakibin elini tahmin etmek.** Rakip ellerini bilen arama +26 puan daha iyi oynuyor (sağdakinin eli tek başına +8, karşıdaki +1, soldaki +3; üçünü bilmek destede ne kaldığını da söylediği için toplamından fazla). Ama açık bilgiden bunun çıkarılabilen kısmı çok küçük: rakibin attığı taş, almadığı taş, açmamış olması ve elinde işlenecek taş bırakmaması tek tek anlamlı ipuçları (gerçek elde 2–3 kat daha sık), hepsi birlikte gizli taşların yerindeki belirsizliğin yalnızca %2'sini gideriyor. Daha önce denenen el okuma ağı %4,7'de kalmıştı. Aramadaki basit tahmin kuralının katkısı da ölçülemeyecek kadar küçük (+2,1 ± 3,1).
 
 ## Ölçümler
 
-**Aynı ellerde karşılaştırma** (`duel`: oyuncu üç ayarlı bota karşı oturur; değer, aynı koltuktaki ayarlı bota göre el başına puan kazancıdır):
+**Bugünkü durum** (`versus`: oyuncu üç rakibe karşı oturur, rakipler elden ele yer değiştirir; değer, rakiplerin ortalamasına göre el başına puan farkı; 770 el, maç 11 el, şansla kazanma %25):
+
+| Masa | Oyuncu | El başına fark | Maçı kazanma |
+|---|---|---|---|
+| 3 bitmeye oynayan bot | aynı bot | −1 ± 1 | %24 |
+| | model tek başına, anlık | +24,5 ± 0,7 | %55 |
+| | arama, sonuna kadar oynatarak, 80 dağıtım (eski) | +38,1 ± 3,9 | %69 |
+| | arama, bir tur sonra keserek, 80 dağıtım | +45,6 ± 4,1 | %75 |
+| | **arama, bir tur sonra keserek, 640 dağıtım** | **+51,4 ± 4,0** | **%81** |
+| | rakip ellerini gören arama (hile) | +71,5 ± 4,4 | %91 |
+| | elleri ve deste sırasını gören (hile) | +123 ± 5 | %100 |
+| 3 model (güçlü, dürüst) | bitmeye oynayan bot | −22,5 ± 1,1 | %6 |
+| | arama, sonuna kadar oynatarak (eski) | +6,9 ± 3,9 | %29 |
+| | arama, bir tur sonra keserek | +6,6 ile +10,5 arası ± 4 | %31–35 |
+| 1 her şeyi gören + 2 bot | bitmeye oynayan bot | görene karşı −132 | %1 |
+| | model tek başına | görene karşı −124 | %2 |
+| | arama, 320 dağıtım | görene karşı −33 ± 5, botlara +43 | %41 |
+| Eşli, eş ve rakipler ayarlı bot | arama, sonuna kadar oynatarak (eski) | takım farkı +46,9 ± 9,6 | %72 |
+| | **arama, bir tur sonra keserek** | **takım farkı +76,9 ± 9,6** | **%84** |
+
+Kesmenin aynı ellerdeki kazancı tekli oyunda +7,5 ± 3,6, eşlide +30,0 ± 9,7; hesap da yaklaşık iki kat hızlandı. 320 dağıtımdan sonra kazanç doyuyor. "Her şeyi gören" rakip bütün elleri ve destenin sırasını bilir, botların ne yapacağını tam, bizim ne yapacağımızı modelle tahmin eder; aramanın kararlarını tam tahmin edemediği için ona karşı kayıp, modelin tek başına oynadığı duruma göre çok daha küçüktür ve bu sayı o yüzden iyimserdir. Bütün rakipler bottur; insanlara karşı ölçüm yok.
+
+**Model eklenirken yapılan karşılaştırma** (`duel`: oyuncu üç ayarlı bota karşı oturur; değer, aynı koltuktaki ayarlı bota göre el başına puan kazancıdır):
 
 | Oyuncu | Tekli | Eşli (takım farkı) |
 |---|---|---|
@@ -117,7 +143,8 @@ Maç yakınken yaklaşık 5 puan kazandırıyor. Çok öndeyken ya da çok gerid
 - Bütün ölçümler botlara karşı yapıldı; model de botlarla ve kendisiyle oynayarak öğrendi. İnsanlara karşı ölçülmedi.
 - Eşli ağ, eşin ayarlı bot gibi oynadığı oyunlardan öğrendi.
 - Model katlamalı ya da değiştirilmiş kurallarda ve maçın son iki elinde devreye girmez; o zaman senin sonraki turlarını da bot oynar.
-- Model açıkken saniyede yaklaşık 16 kat daha az senaryo denenir.
+- Model açıkken bir senaryo, botla oynatılana göre birkaç kat pahalıdır; bir tur sonra kesmek bu maliyeti yaklaşık yarıya indirdi.
+- Eşli ağ hâlâ 3. tur yöntemiyle eğitilmiş olandır; kesilmiş simülasyon onunla da çalışır ve ölçüldü, ama ağın kendisi yeni yöntemle yeniden eğitilmedi.
 - Simülasyonda rakipler bitmeye oynayan botlardır: açabildikleri an açarlar, çiftlerini çift açana işlemek için saklarlar. Blöfü ve masadaki oyuncunun kişisel tarzını bilmezler.
 - 20 000'den fazla yasal hamlesi olan ellerde tam liste yerine hazır planlar karşılaştırılır.
 
@@ -167,11 +194,14 @@ cargo clippy --workspace --all-targets
 | `arena [el] [simülasyon]` | Aramanın düz bota göre el başına puan kazancı |
 | `league [el] [simülasyon] [oyun başına el]` | Bütün oyuncular arasında Elo (tek el ve tam oyun) |
 | `comeback [el] [simülasyon]` | Son elde geriden gelip maçı kazanma oranı, maç modu açık ve kapalı |
-| `duel <el> <rakipler> <oyuncu>...` | Oyuncuları aynı ellerde üç bota karşı karşılaştırır (en hassas ölçüm) |
+| `duel <el> <rakipler> <oyuncu>...` | Oyuncuları aynı ellerde üç bota karşı karşılaştırır |
+| `versus <el> <ağ> <rakipler> <oyuncu>...` | Aynısı, rakip olarak model, arama ya da her şeyi gören oyuncu da oturtulabilir; eşli oyun, maç kazanma oranı, el başına süre |
 | `gen_data <klasör> <el> ...` | Model için eğitim verisi üretir |
 | `net_check <ağ>` | Rust'ın ağı eğitim betiğiyle aynı hesapladığını doğrular |
 | `tune [tur] [deneme] [el]` | Bot ayarlarını kendi kendine oynatarak iyileştirir |
 | `gen_stats` | Hamle üreticinin bulduğu hamle sayıları ve süresi |
+| `settle [pozisyon] [el]` | "Kesinleşince dur" kuralının uzun hesaba göre kaç puan kaybettirdiği |
+| `season <maç> <ağ> ...` | Aynı ellerde tam maçlar: puana oynamak ile maçı kazanmaya oynamak arasındaki fark |
 
 ### Modeli yeniden eğitmek
 
@@ -198,5 +228,11 @@ cargo run --release -p okey-engine --example duel -- 40000 tuned tuned model:dat
 ```
 
 Eşli ağ için `gen_data` satırlarının sonuna `1` eklenir (ilk turda `... - 50 6 10 8 1 5 1`), `duel` içinde rakipler `tuned,partners` yazılır.
+
+Dördüncü turdaki gibi keserek veri üretmek için sona iki sayı daha eklenir: oyuncunun kaç turu oynandıktan sonra modelin değeri alınacağı ve model koltuklarını devamında da modelin oynayıp oynamayacağı. Bu tur 24 deste sırasıyla yaklaşık iki saat sürer:
+
+```sh
+cargo run --release -p okey-engine --example gen_data -- data/g4 100000 71 data/gen2.bin 50 8 10 24 1 5 0 1 1
+```
 
 `--plain` olmadan eğitilen ağ "hangi taş gelirse açarım" girdilerini de okur; tek başına 1–2 puan daha iyi oynar ama simülasyonların içinde kullanmak için fazla yavaştır. Uygulamaya konacak ağ `crates/app/model/value.bin` (tekli) ya da `partners.bin` (eşli) üzerine kopyalanır.

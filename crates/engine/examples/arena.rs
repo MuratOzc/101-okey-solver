@@ -148,6 +148,7 @@ fn main() {
                 infer: false,
                 exhaustive: false,
                 lookahead: false,
+                ..Options::default()
             }),
         ),
         (
@@ -159,6 +160,7 @@ fn main() {
                 infer: true,
                 exhaustive: true,
                 lookahead: false,
+                ..Options::default()
             }),
         ),
         (
@@ -170,6 +172,7 @@ fn main() {
                 infer: true,
                 exhaustive: true,
                 lookahead: true,
+                ..Options::default()
             }),
         ),
     ];

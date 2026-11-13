@@ -153,8 +153,8 @@ fn decide(
     help: &Help,
 ) -> (Option<Decision>, Option<Move>) {
     let mut view = public_view(g, phase, taken);
-    if help.peek {
-        for p in 1..4 {
+    for p in 1..4 {
+        if help.peek[p] {
             view.players[p].known = tiles_of(&g.players[p].hand);
         }
     }
@@ -185,8 +185,8 @@ pub fn search_turn(g: &mut Game, sv: &mut Solver, first: bool, iterations: usize
 
 #[derive(Clone, Default)]
 pub struct Help {
-    /// Told every opponent's hand, though not the order of the deck. Not a legal player.
-    pub peek: bool,
+    /// The seats whose hands it is told, though never the order of the deck. Not a legal player.
+    pub peek: [bool; 4],
     /// (network, how many simulated deals its opinion of a move counts for, whether it plays my later turns)
     pub model: Option<(Arc<Net>, f64, bool)>,
 }

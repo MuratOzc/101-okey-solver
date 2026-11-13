@@ -106,7 +106,7 @@ impl Default for State {
 
 type R = Result<(), String>;
 
-// The comeback measurements showed a gain from playing for the match only in the last hands.
+// examples/season.rs: playing for the match before the last two hands won no more matches and cost points.
 const MATCH_HANDS: u8 = 2;
 
 fn remove_one(v: &mut Vec<Tile>, t: Tile) -> bool {
