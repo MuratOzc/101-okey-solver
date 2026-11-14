@@ -124,7 +124,7 @@ def judge(model, b, groups, batch):
     model.train()
     return dict(
         inside=tot["inside"] / tot["n"],
-        explained=1 - tot["inside"] / (tot["spread"] or 1.0),
+        explained=1 - tot["inside"] / tot["spread"],
         level=tot["level"] / tot["g"],
         level_explained=1 - tot["level"] / tot["level_spread"],
         pick=tot["pick"] / tot["g"],

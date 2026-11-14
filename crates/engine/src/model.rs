@@ -1,9 +1,8 @@
 use crate::agent::Agent;
-use crate::features::{Feat, Moment, encode};
-use crate::game::{Game, OpenChoice, Opened, Outcome};
+use crate::features::{Moment, encode};
+use crate::game::{Game, OpenChoice, Outcome};
 use crate::meld::{Shape, Solver};
-use crate::moves::generate;
-use crate::net::{Near, Net};
+use crate::net::Net;
 use crate::policy::Policy;
 use crate::tile::*;
 use std::sync::Arc;
@@ -108,125 +107,6 @@ pub fn model_act_valued(g: &mut Game, sv: &mut Solver, net: &Net, taken: Option<
             (end, None)
         }
     }
-}
-
-/// A position differing from the last fully valued one in more inputs than this is valued from scratch.
-const NEAR_ENOUGH: u32 = 48;
-
-struct Valuer<'a> {
-    net: &'a Net,
-    near: Option<Near>,
-}
-
-impl Valuer<'_> {
-    fn value(&mut self, f: &Feat) -> f32 {
-        match &self.near {
-            Some(near) if Net::distance(near, f) <= NEAR_ENOUGH => self.net.value_near(near, f),
-            _ => {
-                let near = self.net.near(f);
-                let v = self.net.value_near(&near, f);
-                self.near = Some(near);
-                v
-            }
-        }
-    }
-}
-
-/// What the network makes of `a` once `p` has discarded `t` there. Leaves `a` as it was.
-fn after_discard(a: &mut Game, sv: &mut Solver, valuer: &mut Valuer, p: u8, t: Tile) -> f32 {
-    let pi = p as usize;
-    let (penalty, last, top) = (a.players[pi].penalty, a.last[pi], a.top);
-    a.discard(p, t);
-    let v = written3(a, p) as f32 + valuer.value(&encode(a, sv, p, Moment::After, valuer.net.full()));
-    a.players[pi].penalty = penalty;
-    a.players[pi].hand[t as usize] += 1;
-    a.seen[t as usize] -= 1;
-    a.piles[pi][t as usize] -= 1;
-    a.last[pi] = last;
-    a.top = top;
-    v
-}
-
-/// The network's turn among every legal move and every discard, penalised ones too. Nothing is skipped,
-/// sampled or capped: what is worth doing is for the network to find out.
-pub fn model_act_all(g: &mut Game, sv: &mut Solver, net: &Net, taken: Option<Tile>) -> (Option<Outcome>, Option<f32>) {
-    let p = g.current;
-    let pi = p as usize;
-    let was_unopened = g.players[pi].opened == Opened::No;
-    let mut valuer = Valuer { net, near: None };
-    let found = generate(g, p, taken, usize::MAX).positions;
-    let mut best: Option<(f32, usize, Tile)> = None;
-    let mut finish: Option<(f32, Game, Outcome)> = None;
-    for (k, acts) in found.iter().enumerate() {
-        let mut a = g.clone();
-        let Ok(done) = a.play_acts(p, acts, taken) else { continue };
-        let hand = a.players[pi].hand;
-        let finishing = a.hand_len(p) == 1;
-        if done.short_opening {
-            if !finishing || !done.only_own_melds || a.rules.elden_requires_open_min {
-                continue;
-            }
-            a.players[pi].opened = if done.pairs { Opened::Pairs } else { Opened::Melds };
-        }
-        if finishing {
-            let Some(t) = (0..NIDS as Tile).find(|&t| hand[t as usize] > 0) else {
-                continue;
-            };
-            let elden = was_unopened && (done.only_own_melds || a.rules.open_finish_is_elden);
-            let end = a.finish(p, t, elden);
-            let v = a.gap3(&a.scores(&end), p) as f32;
-            if finish.as_ref().is_none_or(|f| v < f.0) {
-                finish = Some((v, a, end));
-            }
-            continue;
-        }
-        for t in (0..NIDS as Tile).filter(|&t| hand[t as usize] > 0) {
-            let v = after_discard(&mut a, sv, &mut valuer, p, t);
-            if best.is_none_or(|b| v < b.0) {
-                best = Some((v, k, t));
-            }
-        }
-    }
-    match (finish, best) {
-        (Some((fv, a, end)), b) if b.is_none_or(|b| fv <= b.0) => {
-            *g = a;
-            (Some(end), None)
-        }
-        (_, Some((v, k, t))) => {
-            let mut a = g.clone();
-            let _ = a.play_acts(p, &found[k], taken);
-            a.discard(p, t);
-            a.current = (p + 1) % 4;
-            *g = a;
-            (None, Some(v))
-        }
-        (None, None) => {
-            let end = g.bot_act(sv, p, taken);
-            if end.is_none() {
-                g.current = (p + 1) % 4;
-            }
-            (end, None)
-        }
-        (Some(_), None) => unreachable!(),
-    }
-}
-
-/// A whole turn of the network among every legal move: draw or take, then `model_act_all`.
-pub fn model_turn_all(g: &mut Game, sv: &mut Solver, net: &Net, first: bool) -> Option<Outcome> {
-    let p = g.current;
-    if !first && g.deck.is_empty() {
-        return Some(Outcome::DeckOut);
-    }
-    g.table.new_turn();
-    let mut taken = None;
-    if !first {
-        if draw_or_take(net, g, sv, p).is_some_and(|(draw, take)| take < draw) {
-            taken = Some(g.take_top(p));
-        } else if g.draw(p).is_none() {
-            return Some(Outcome::DeckOut);
-        }
-    }
-    model_act_all(g, sv, net, taken).0
 }
 
 pub fn model_turn(g: &mut Game, sv: &mut Solver, net: &Net, first: bool) -> Option<Outcome> {
