@@ -1,7 +1,7 @@
 use okey_engine::features::{Feat, LAYOUT, Moment, NBITS, NREAL, encode};
 use okey_engine::game::{Game, Outcome};
 use okey_engine::meld::Solver;
-use okey_engine::model::{draw_or_take, model_act, play_out_to, turn_value, turns, written3};
+use okey_engine::model::{Valuer, draw_or_take, model_act, play_out_to, turns, written3};
 use okey_engine::net::Net;
 use okey_engine::policy::Policy;
 use okey_engine::rng::Rng;
@@ -10,7 +10,7 @@ use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-const USAGE: &str = "gen_data <out-dir> <hands> [seed] [network | -] [network seats %] [options kept] [wild %] [deck orders] [network plays on: 1 | 0] [discards it weighs when playing on] [partners: 1 | 0] [turns of the mover played on before the network's value is taken, 0 = to the end] [network also plays on for the other network seats: 1 | 0]";
+const USAGE: &str = "gen_data <out-dir> <hands> [seed] [network | -] [network seats %] [options kept] [wild %] [deck orders] [network plays on: 1 | 0] [discards it weighs when playing on] [partners: 1 | 0] [turns of the mover played on before the network's value is taken, 0 = to the end] [network also plays on for the other network seats: 1 | 0] [threads]";
 const Y_SCALE: f32 = 300.0;
 
 struct Setup<'a> {
@@ -140,7 +140,10 @@ fn recorded_turn(
 
     let options = turns(g, sv, p, taken, okey_engine::tile::NIDS);
     let values: Vec<f32> = match s.net {
-        Some(net) => options.iter().map(|t| turn_value(net, sv, t, p)).collect(),
+        Some(net) => {
+            let mut valuer = Valuer::new(net);
+            options.iter().map(|t| valuer.turn(sv, t, p)).collect()
+        }
         None => vec![],
     };
     let mut open: Vec<usize> = (0..options.len()).filter(|&i| options[i].end.is_none()).collect();
@@ -249,7 +252,10 @@ fn main() {
         net.as_ref().is_none_or(|net| net.partners == partners),
         "the network was trained for the other kind of game"
     );
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().saturating_sub(2).max(1));
+    let threads = args
+        .get(14)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get().saturating_sub(2).max(1)));
     let next = AtomicU64::new(0);
     let records = AtomicU64::new(0);
     let start = Instant::now();

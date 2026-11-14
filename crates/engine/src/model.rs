@@ -1,8 +1,8 @@
 use crate::agent::Agent;
-use crate::features::{Moment, encode};
+use crate::features::{Feat, Moment, encode};
 use crate::game::{Game, OpenChoice, Outcome};
 use crate::meld::{Shape, Solver};
-use crate::net::Net;
+use crate::net::{Near, Net};
 use crate::policy::Policy;
 use crate::tile::*;
 use std::sync::Arc;
@@ -65,10 +65,36 @@ pub fn turns(g: &Game, sv: &mut Solver, p: u8, taken: Option<Tile>, discards: us
     out
 }
 
-pub fn turn_value(net: &Net, sv: &mut Solver, t: &Turn, me: u8) -> f32 {
-    match &t.end {
-        Some(end) => t.after.gap3(&t.after.scores(end), me) as f32,
-        None => written3(&t.after, me) as f32 + net.value(&encode(&t.after, sv, me, Moment::After, net.full())),
+const NEAR_ENOUGH: u32 = 48;
+
+/// Values the options of one turn one after another: they differ in a few inputs, so each costs only those.
+pub struct Valuer<'a> {
+    net: &'a Net,
+    near: Option<Near>,
+}
+
+impl<'a> Valuer<'a> {
+    pub fn new(net: &'a Net) -> Self {
+        Valuer { net, near: None }
+    }
+
+    fn value(&mut self, f: &Feat) -> f32 {
+        match &self.near {
+            Some(near) if Net::distance(near, f) <= NEAR_ENOUGH => self.net.value_near(near, f),
+            _ => {
+                let near = self.net.near(f);
+                let v = self.net.value_near(&near, f);
+                self.near = Some(near);
+                v
+            }
+        }
+    }
+
+    pub fn turn(&mut self, sv: &mut Solver, t: &Turn, me: u8) -> f32 {
+        match &t.end {
+            Some(end) => t.after.gap3(&t.after.scores(end), me) as f32,
+            None => written3(&t.after, me) as f32 + self.value(&encode(&t.after, sv, me, Moment::After, self.net.full())),
+        }
     }
 }
 
@@ -89,9 +115,10 @@ pub fn model_act(g: &mut Game, sv: &mut Solver, net: &Net, taken: Option<Tile>) 
 pub fn model_act_valued(g: &mut Game, sv: &mut Solver, net: &Net, taken: Option<Tile>) -> (Option<Outcome>, Option<f32>) {
     let p = g.current;
     g.policy[p as usize] = Policy::TUNED;
+    let mut valuer = Valuer::new(net);
     let best = turns(g, sv, p, taken, net.discards)
         .into_iter()
-        .map(|t| (turn_value(net, sv, &t, p), t))
+        .map(|t| (valuer.turn(sv, &t, p), t))
         .min_by(|a, b| a.0.total_cmp(&b.0));
     match best {
         Some((v, t)) => {
