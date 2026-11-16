@@ -105,6 +105,19 @@ fn save_state(s: &State) {
 
 const MAX_WORKERS: usize = 12;
 
+/// worker.js and worker_bg.wasm keep their names across builds; without the build id a cache can pair old glue with new wasm.
+fn worker_url() -> Option<String> {
+    let href = web_sys::window()?.location().href().ok()?;
+    let base = &href[..href.rfind('/')? + 1];
+    let id = env!("BUILD_ID");
+    let src = format!("importScripts('{base}worker.js?v={id}');wasm_bindgen('{base}worker_bg.wasm?v={id}');");
+    let parts = js_sys::Array::of1(&JsValue::from_str(&src));
+    let opts = web_sys::BlobPropertyBag::new();
+    opts.set_type("text/javascript");
+    let blob = web_sys::Blob::new_with_str_sequence_and_options(&parts, &opts).ok()?;
+    web_sys::Url::create_object_url_with_blob(&blob).ok()
+}
+
 fn worker_count() -> usize {
     let cores = web_sys::window().map_or(2.0, |w| w.navigator().hardware_concurrency()) as usize;
     cores.saturating_sub(1).clamp(1, MAX_WORKERS)
@@ -471,7 +484,8 @@ fn App() -> impl IntoView {
     provide_context(ctx);
 
     for i in 0..worker_count() {
-        let Ok(w) = Worker::new("./worker_loader.js") else { break };
+        let Some(url) = worker_url() else { break };
+        let Ok(w) = Worker::new(&url) else { break };
         let onmsg = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
             let Some(s) = e.data().as_string() else { return };
             if s == "ready" {
