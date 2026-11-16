@@ -725,3 +725,25 @@ fn pair_stats_agree_with_the_full_pair_plan() {
         }
     }
 }
+
+#[test]
+fn opponent_reads_are_exact_for_a_known_hand_and_sum_to_one() {
+    use okey_engine::reads::read_opponents;
+    let mut view = sample_view(Phase::AfterDraw);
+    let g = Game::deal(&view.rules, &mut Rng::new(42), 0);
+    view.players[1].known = tiles_of(&g.players[1].hand);
+    let mut sv = Solver::new(&view.rules);
+    let exact = g
+        .open_search(&mut sv, &g.players[1].hand, None)
+        .map_or(0, |p| p.open_value(&view.rules));
+    let reads = read_opponents(&view, 200, 3);
+    assert_eq!(reads.len(), 3);
+    assert_eq!(reads[0].per, [exact; 3]);
+    for r in &reads {
+        let bands: f32 = r.per_bands.iter().sum();
+        let pairs: f32 = r.pairs.iter().sum();
+        assert!((bands - 1.0).abs() < 1e-3 && (pairs - 1.0).abs() < 1e-3, "{bands} {pairs}");
+        assert!(r.per[0] <= r.per[1] && r.per[1] <= r.per[2]);
+        assert!(r.p_either >= r.p_melds.max(r.p_pairs) - 1e-6);
+    }
+}

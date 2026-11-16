@@ -11,7 +11,9 @@ Ekran ikiye ayrılır: masa (rakipler, son attıkları taşlar, açılan perler,
 
 Önerinin altında beklenen puan farkı, bitirme ihtimali ve attığın taşı sağdakinin alma ihtimali yazar. Program düşündükçe sayılar netleşir; beklemek zorunda değilsin.
 
-Üst çubuktaki ☷ düğmesi atılan taşları, elinin durumunu ve görülmemiş taşları açar; ⚙ ayarları ve maç puanını. "Bu durumu kopyala" düğmesi o anki durumu metin olarak panoya alır; saçma bir öneri görürsen onu saklamak hatayı yeniden üretmeye yeter.
+Her rakibin adının altında **tahmini eli** yazar: açmamışsa en iyi perinin %80 ihtimalle düştüğü aralık, çift sayısı ve şu an açabilme ihtimali; açmışsa el şimdi bitse yazılacak puan aralığı. Görülmemiş taşlar rakiplerin attığı taşlara ve açmamış olmalarına uyacak biçimde 200 kez dağıtılıp sayılır. Botlarla oynanmış 2680 durumda gerçek per bu aralığa %78 oranında düştü. Açabilme ihtimali rakibin tarzına bağlıdır: elini tutup geç açanlarda olduğundan düşük çıkar (%9 dedi, gerçek %18), hazır olunca hemen açanlarda yüksek (%7 dedi, gerçek %1).
+
+Üst çubuktaki ☷ düğmesi atılan taşları, elinin durumunu, rakiplerin tahmini elinin ayrıntısını (per aralıklarının ve çift sayılarının ihtimalleri) ve görülmemiş taşları açar; ⚙ ayarları ve maç puanını. "Bu durumu kopyala" düğmesi o anki durumu metin olarak panoya alır; saçma bir öneri görürsen onu saklamak hatayı yeniden üretmeye yeter.
 
 ### Maç puanı
 

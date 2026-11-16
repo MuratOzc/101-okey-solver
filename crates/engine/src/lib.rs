@@ -8,6 +8,7 @@ pub mod moves;
 pub mod net;
 pub mod pairs;
 pub mod policy;
+pub mod reads;
 pub mod rng;
 pub mod rules;
 pub mod stakes;

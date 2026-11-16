@@ -3,11 +3,13 @@ mod state;
 
 use leptos::prelude::*;
 use okey_engine::analysis::{
-    Analyzer, CandReport, Decision, Field, HandReport, Options, Packed, Phase, Report, describe, describe_move, hand_report, model_fits,
+    Analyzer, CandReport, Decision, Field, HandReport, Options, Packed, Phase, Report, View, describe, describe_move, hand_report,
+    model_fits,
 };
 use okey_engine::game::{Opened, Step};
 use okey_engine::meld::{Shape, pos_tile};
 use okey_engine::moves::{Act, Move};
+use okey_engine::reads::{BAND, MAX_PAIRS, Read, read_opponents};
 use okey_engine::table::{JokerSlot, LayOption, Side};
 use okey_engine::tile::*;
 use serde::{Deserialize, Serialize};
@@ -21,6 +23,7 @@ const STORAGE_KEY: &str = "okey101.state.v2";
 const UNDO_LIMIT: usize = 300;
 const SEAT_OWNER: [&str; 4] = ["kendi", "Sağ'ın", "Karşı'nın", "Sol'un"];
 const OPPONENTS: [u8; 3] = [3, 2, 1];
+const READ_DEALS: usize = 200;
 const GROUP_COLORS: [&str; 6] = ["#22c55e", "#38bdf8", "#f59e0b", "#e879f9", "#f87171", "#a3e635"];
 
 #[derive(Clone, Debug)]
@@ -242,6 +245,7 @@ pub struct Ctx {
     chosen: Memo<Option<Choice>>,
     steps: Memo<Option<Vec<Step>>>,
     hand: Memo<Option<HandReport>>,
+    reads: Memo<Option<Vec<Read>>>,
 }
 
 impl Ctx {
@@ -396,6 +400,14 @@ fn App() -> impl IntoView {
             None => describe(&v, d),
         })
     });
+    let view_key = Memo::new(move |_| {
+        st.with(|s| {
+            (s.stage == Stage::Play)
+                .then(|| s.view_as(Phase::AfterDraw))
+                .flatten()
+                .and_then(|v| serde_json::to_string(&v).ok())
+        })
+    });
     let ctx = Ctx {
         st,
         msg: RwSignal::new(None),
@@ -412,6 +424,12 @@ fn App() -> impl IntoView {
                     .then(|| s.view_as(Phase::AfterDraw).map(|v| hand_report(&v)))
                     .flatten()
             })
+        }),
+        reads: Memo::new(move |_| {
+            view_key
+                .get()
+                .and_then(|j| serde_json::from_str::<View>(&j).ok())
+                .map(|v| read_opponents(&v, READ_DEALS, 11))
         }),
     };
     provide_context(ctx);
@@ -573,12 +591,14 @@ fn Seats() -> impl IntoView {
                     let takeable = p == 3 && s.stage == Stage::Play && s.turn == 0 && !s.may_act();
                     let name = seat_name(&s, p);
                     let initials: String = SEAT_NAMES[p as usize].chars().take(2).collect();
+                    let guess = ctx.reads.get().and_then(|rs| rs.into_iter().find(|r| r.seat == p)).map(|r| read_line(&r, &s));
                     view! {
                         <div class="seat" class:cur=cur>
                             <span class="av">{initials}</span>
                             <span class="who">
                                 <b>{name}</b>
                                 <small>{format!("{count} taş")} {badge.map(|b| view! { " · " <span class="open">{b}</span> })}</small>
+                                {guess.map(|g| view! { <small class="guess" title="Tahmini eli">{g}</small> })}
                             </span>
                             <span class="last" class:take=takeable title="Son attığı">
                                 {pv.discards.last().map(|&t| tile_view(t, okey))}
@@ -1830,6 +1850,8 @@ fn Info() -> impl IntoView {
         <Discards/>
         <h3>"Elimin durumu"</h3>
         <HandInfo/>
+        <h3>"Rakiplerin tahmini eli"</h3>
+        <Reads/>
         <h3>"Görülmemiş taşlar"</h3>
         <Unseen/>
         <CopyState/>
@@ -1901,6 +1923,135 @@ fn HandInfo() -> impl IntoView {
                     }).collect_view()}
                 </div>
             }
+        })
+    }
+}
+
+fn share(p: f32) -> String {
+    pct(p as f64)
+}
+
+/// The smallest and largest pair counts once the 10% least likely at each end are left out.
+fn pair_range(dist: &[f32]) -> (usize, usize) {
+    let mut acc = 0.0;
+    let lo = dist.iter().position(|&x| {
+        acc += x;
+        acc > 0.1
+    });
+    acc = 0.0;
+    let hi = dist.iter().rposition(|&x| {
+        acc += x;
+        acc > 0.1
+    });
+    (lo.unwrap_or(0), hi.unwrap_or(0))
+}
+
+fn pairs_text(dist: &[f32]) -> String {
+    let more = |k: usize| if k == MAX_PAIRS { "+" } else { "" };
+    match pair_range(dist) {
+        (a, b) if a == b => format!("{a}{} çift", more(a)),
+        (a, b) => format!("{a}–{b}{} çift", more(b)),
+    }
+}
+
+fn read_line(r: &Read, s: &State) -> String {
+    match r.opened {
+        Opened::No => {
+            let mut parts = vec![format!("per {}–{}", s.total(r.per[0]), s.total(r.per[2]))];
+            if s.rules.pairs_enabled {
+                parts.push(pairs_text(&r.pairs));
+            }
+            parts.push(format!("açabilir {}", share(r.p_either)));
+            parts.join(" · ")
+        }
+        _ => format!("elinde {}–{} puan", r.points[0], r.points[2]),
+    }
+}
+
+#[component]
+fn Reads() -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
+    let st = ctx.st;
+    move || {
+        let s = st.get();
+        let reads = ctx.reads.get()?;
+        let rows = OPPONENTS
+            .iter()
+            .filter_map(|&p| reads.iter().find(|r| r.seat == p).cloned())
+            .map(|r| {
+                let detail = match r.opened {
+                    Opened::No => {
+                        let bands = r
+                            .per_bands
+                            .iter()
+                            .enumerate()
+                            .filter(|&(_, &x)| x >= 0.03)
+                            .map(|(i, &x)| {
+                                let lo = i as i32 * BAND;
+                                let reach = lo + BAND > r.meld_req;
+                                view! {
+                                    <div class="bar" class:reach=reach>
+                                        <span class="bl">{format!("{}–{}", s.total(lo), s.total(lo + BAND - 1))}</span>
+                                        <span class="bt"><span class="bf" style=format!("width:{:.0}%", x * 100.0)></span></span>
+                                        <span class="bp">{share(x)}</span>
+                                    </div>
+                                }
+                            })
+                            .collect_view();
+                        let pairs = s.rules.pairs_enabled.then(|| {
+                            let cells = r
+                                .pairs
+                                .iter()
+                                .enumerate()
+                                .filter(|&(_, &x)| x >= 0.01)
+                                .map(|(k, &x)| {
+                                    let more = if k == MAX_PAIRS { "+" } else { "" };
+                                    view! { <span class="pc" class:reach={k >= r.pair_req as usize}>{format!("{k}{more} çift {}", share(x))}</span> }
+                                })
+                                .collect_view();
+                            view! { <div class="row wrap pcs">{cells}</div> }
+                        });
+                        let odds = if s.rules.pairs_enabled {
+                            format!(
+                                "Şu an {}+ per açabilir {} · {} çift açabilir {} · ikisinden biri {}",
+                                s.total(r.meld_req),
+                                share(r.p_melds),
+                                r.pair_req,
+                                share(r.p_pairs),
+                                share(r.p_either)
+                            )
+                        } else {
+                            format!("Şu an {}+ per açabilir {}", s.total(r.meld_req), share(r.p_melds))
+                        };
+                        view! {
+                            <div class="muted">
+                                {format!("En iyi per: büyük ihtimalle {} (%80 aralık {}–{})", s.total(r.per[1]), s.total(r.per[0]), s.total(r.per[2]))}
+                            </div>
+                            <div class="bars">{bands}</div>
+                            {pairs}
+                            <div>{odds}</div>
+                        }
+                        .into_any()
+                    }
+                    _ => view! {
+                        <div>{format!("El şimdi bitse yazılacak: büyük ihtimalle {} (%80 aralık {}–{})", r.points[1], r.points[0], r.points[2])}</div>
+                    }
+                    .into_any(),
+                };
+                view! {
+                    <div class="read">
+                        <b>{seat_name(&s, r.seat)}</b>
+                        {detail}
+                    </div>
+                }
+            })
+            .collect_view();
+        Some(view! {
+            <p class="muted">
+                "Görülmemiş taşlar, rakiplerin attığı taşlara ve açmamış olmalarına uyacak biçimde 200 kez dağıtılıp sayılır. "
+                "Elini tutup geç açan rakiplerde açabilme ihtimali olduğundan düşük, hazır olunca hemen açanlarda yüksek çıkar."
+            </p>
+            {rows}
         })
     }
 }
