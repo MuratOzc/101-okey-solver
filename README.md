@@ -24,7 +24,7 @@ El dağıtılınca göstergeyi, kimin başladığını ve taşlarını girersin.
 
 ## Hile mi?
 
-Hayır. Program rakibin elini ya da destenin sırasını bilmez; senin de görebildiğin taşları sayar. Farkı şuradan gelir: iyi bir oyuncunun kafasında yaptığını, yani olasılıkları tartmayı ve hamleleri sonuna kadar düşünmeyi, binlerce kez ve hatasız yapar. Bunu yaparken kendi kendine oynayarak eğitilmiş bir yapay zekâdan yardım alır.
+Hayır. Program rakibin elini ya da destenin sırasını bilmez; senin de görebildiğin taşları sayar. Farkı şuradan gelir: iyi bir oyuncunun kafasında yaptığını, yani olasılıkları tartmayı ve hamleleri sonuna kadar düşünmeyi, binlerce kez ve hatasız yapar. Bunu yaparken botlarla oynanmış binlerce elden eğitilmiş bir yapay zekâdan yardım alır.
 
 ## Kurallar
 
@@ -53,7 +53,7 @@ trunk build --release
 
 ## Ayrıntılar
 
-Kuralların tam listesi, ölçümler, proje yapısı ve yapay zekâyı yeniden eğitme adımları: [docs/ayrintilar.md](docs/ayrintilar.md)
+Masada kullanım, kuralların tam listesi ve geliştirme: [docs/ayrintilar.md](docs/ayrintilar.md)
 
 ## Lisans
 
