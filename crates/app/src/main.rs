@@ -1960,7 +1960,11 @@ fn pairs_text(dist: &[f32]) -> String {
 fn read_lines(r: &Read, s: &State) -> Vec<String> {
     match r.opened {
         Opened::No => {
-            let odds = format!("açar {}", share(r.p_either));
+            let odds = if no_turn_left(s, r.seat) {
+                "sırası gelmeyecek".to_string()
+            } else {
+                format!("açar {}", share(r.p_either))
+            };
             let second = if s.rules.pairs_enabled {
                 format!("{} · {odds}", pairs_text(&r.pairs))
             } else {
@@ -1968,7 +1972,20 @@ fn read_lines(r: &Read, s: &State) -> Vec<String> {
             };
             vec![format!("per {}–{}", s.total(r.per[0]), s.total(r.per[2])), second]
         }
-        _ => vec![format!("elinde {}–{} puan", r.points[0], r.points[2])],
+        _ => vec![format!("elinde {}–{} puan{}", r.points[0], r.points[2], okey_share(r))],
+    }
+}
+
+/// The deck is empty and someone else is on turn: the hand ends before this seat plays again.
+fn no_turn_left(s: &State, seat: u8) -> bool {
+    s.deck_count == 0 && s.turn != seat
+}
+
+fn okey_share(r: &Read) -> String {
+    if r.p_okey >= 0.05 {
+        format!(" · okey {}", share(r.p_okey))
+    } else {
+        String::new()
     }
 }
 
@@ -2034,7 +2051,9 @@ fn Reads() -> impl IntoView {
                                 .collect_view();
                             view! { <div class="row wrap pcs">{cells}</div> }
                         });
-                        let odds = if s.rules.pairs_enabled {
+                        let odds = if no_turn_left(&s, r.seat) {
+                            "Deste bitti, el sırası ona gelmeden bitecek: açamaz.".to_string()
+                        } else if s.rules.pairs_enabled {
                             format!(
                                 "Şu an {}+ per açabilir {} · {} çift açabilir {} · ikisinden biri {}",
                                 s.total(r.meld_req),
@@ -2057,7 +2076,8 @@ fn Reads() -> impl IntoView {
                         .into_any()
                     }
                     _ => view! {
-                        <div>{format!("El şimdi bitse yazılacak: büyük ihtimalle {} (%80 aralık {}–{})", r.points[1], r.points[0], r.points[2])}</div>
+                        <div>{format!("El şimdi bitse elindeki taşlar: büyük ihtimalle {} puan (%80 aralık {}–{}), okey sayılmadan", r.points[1], r.points[0], r.points[2])}</div>
+                        <div>{format!("Elinde okey olma ihtimali {} (olursa +{} yazılır)", share(r.p_okey), s.rules.joker_in_hand)}</div>
                     }
                     .into_any(),
                 };
@@ -2071,8 +2091,9 @@ fn Reads() -> impl IntoView {
             .collect_view();
         Some(view! {
             <p class="muted">
-                "Görülmemiş taşlar, rakiplerin attığı taşlara ve açmamış olmalarına uyacak biçimde 200 kez dağıtılıp sayılır. "
-                "Elini tutup geç açan rakiplerde açabilme ihtimali olduğundan düşük, hazır olunca hemen açanlarda yüksek çıkar."
+                "Görülmemiş taşlar 200 kez dağıtılıp sayılır; rakiplerin attığı taşlara ve açmamış olmalarına uyan dağıtımlar daha çok sayılır. "
+                "Açabilecek eli olup açmamak destede taş azaldıkça ihtimal dışı sayılır, çünkü açmayana 101 yazılır. "
+                "El başında elini tutup geç açanlarda açabilme ihtimali olduğundan düşük, hazır olunca hemen açanlarda yüksek çıkar."
             </p>
             {rows}
         })

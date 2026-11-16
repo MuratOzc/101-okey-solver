@@ -458,6 +458,12 @@ impl View {
     /// How well a dealt-out game fits the opponents' visible behaviour, in (0, 1].
     /// Kept soft on purpose: people bluff and hold tiles back.
     fn plausibility(&self, g: &Game, sv: &mut Solver) -> f32 {
+        self.plausibility_with(g, sv, None)
+    }
+
+    /// `ready`: how likely an unopened player is to sit on an opening they could lay; None uses the
+    /// search's fixed rule (held back only while the bots' policy would hold).
+    pub(crate) fn plausibility_with(&self, g: &Game, sv: &mut Solver, ready: Option<f32>) -> f32 {
         let mut w = 1.0f32;
         for o in 1..4usize {
             let pv = &self.players[o];
@@ -467,11 +473,15 @@ impl View {
                     w *= DISCARD_FITS;
                 }
             }
-            if pv.opened == Opened::No && !pv.discards.is_empty() && !g.should_hold(o as u8) {
-                let ready = g.open_search(sv, hand, None).is_some_and(|p| p.open_value(&g.rules) >= g.meld_req)
+            let factor = ready.or_else(|| (!g.should_hold(o as u8)).then_some(UNOPENED_BUT_READY));
+            if let Some(f) = factor
+                && pv.opened == Opened::No
+                && !pv.discards.is_empty()
+            {
+                let can = g.open_search(sv, hand, None).is_some_and(|p| p.open_value(&g.rules) >= g.meld_req)
                     || g.pairs_ok(o as u8, None).is_some();
-                if ready {
-                    w *= UNOPENED_BUT_READY;
+                if can {
+                    w *= f;
                 }
             }
         }

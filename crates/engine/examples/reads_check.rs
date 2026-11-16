@@ -1,3 +1,6 @@
+//! How well the opponent estimates match the real hands, in positions from bot games.
+//! `reads_check [off]`: off weighs every deal the same. FIN=1 uses bots that open at once.
+
 use okey_engine::analysis::*;
 use okey_engine::game::*;
 use okey_engine::meld::Solver;
@@ -6,23 +9,31 @@ use okey_engine::policy::Policy;
 use okey_engine::reads::read_with;
 use okey_engine::rng::Rng;
 use okey_engine::rules::Rules;
-use std::time::Instant;
+
+#[derive(Default)]
+struct Bucket {
+    n: f64,
+    truth: f64,
+    pred: f64,
+    brier: f64,
+    inside: f64,
+}
 
 fn main() {
     let rules = Rules::default();
     let mut sv = Solver::new(&rules);
-    let (mut n, mut inside, mut med_err, mut pair_hit, mut brier, mut brier0, mut ready, mut pred) =
-        (0, 0, 0f64, 0f64, 0f64, 0f64, 0f64, 0f64);
-    let mut t = 0f64;
-    let mut kept = vec![];
+    let infer = std::env::args().nth(1).is_none();
+    let policy = if std::env::var("FIN").is_ok() {
+        Policy::FINISHER
+    } else {
+        Policy::TUNED
+    };
+    let mut buckets = [Bucket::default(), Bucket::default()];
+    let (mut okey_n, mut okey_brier, mut pts_inside, mut below, mut above) = (0f64, 0f64, 0f64, 0f64, 0f64);
     for seed in 0..3000u64 {
         let mut g = Game::deal(&rules, &mut Rng::new(seed), 1);
-        g.policy = [if std::env::var("FIN").is_ok() {
-            Policy::FINISHER
-        } else {
-            Policy::TUNED
-        }; 4];
-        let stop = 1 + (seed % 7) as u32;
+        g.policy = [policy; 4];
+        let stop = 1 + (seed % 9) as u32;
         let mut turns = 0;
         let mut over = g.starter_turn(&mut sv).is_some();
         while !over && !(g.current == 0 && turns >= stop * 4) {
@@ -33,56 +44,47 @@ fn main() {
             continue;
         }
         let view = public_view(&g, Phase::BeforeDraw, None);
-        let t0 = Instant::now();
-        let infer = std::env::args().nth(1).is_none();
-        let reads = read_with(
-            &view,
-            300,
-            seed,
-            &Options {
-                infer,
-                ..Options::default()
-            },
-        );
-        t += t0.elapsed().as_secs_f64();
-        for r in reads {
+        for r in read_with(&view, 300, seed, infer) {
             let p = &g.players[r.seat as usize];
             if p.opened != Opened::No {
+                let has = (p.hand[52] > 0) as i32 as f64;
+                let pts =
+                    (0..52).map(|t| p.hand[t] as i32 * (t as i32 % 13 + 1)).sum::<i32>() * if p.opened == Opened::Pairs { 2 } else { 1 };
+                okey_n += 1.0;
+                okey_brier += (r.p_okey as f64 - has).powi(2);
+                pts_inside += (r.points[0] <= pts && pts <= r.points[2]) as i32 as f64;
+                below += (pts < r.points[0]) as i32 as f64;
+                above += (pts > r.points[2]) as i32 as f64;
                 continue;
             }
             let v = g.open_search(&mut sv, &p.hand, None).map_or(0, |pl| pl.open_value(&rules));
-            let np = pair_stats(&p.hand, &rules, None).0.min(7);
+            let np = pair_stats(&p.hand, &rules, None).0;
             let truth = (v >= r.meld_req || np >= r.pair_req as usize) as i32 as f64;
-            n += 1;
-            inside += (r.per[0] <= v && v <= r.per[2]) as i32;
-            med_err += (r.per[1] - v).abs() as f64;
-            pair_hit += r.pairs[np] as f64;
-            brier += (r.p_either as f64 - truth).powi(2);
-            ready += truth;
-            pred += r.p_either as f64;
-            kept.push(truth);
+            let b = &mut buckets[(view.deck_count <= 8) as usize];
+            b.n += 1.0;
+            b.truth += truth;
+            b.pred += r.p_either as f64;
+            b.brier += (r.p_either as f64 - truth).powi(2);
+            b.inside += (r.per[0] <= v && v <= r.per[2]) as i32 as f64;
         }
     }
-    let base = ready / n as f64;
-    for &x in &kept {
-        brier0 += (base - x).powi(2);
+    for (name, b) in ["deck > 8", "deck <= 8"].iter().zip(&buckets) {
+        let base = b.truth / b.n;
+        println!(
+            "{name}: {} unopened  per inside 10-90% {:.1}%  can open: truth {:.1}% predicted {:.1}%  brier {:.4} (base rate {:.4})",
+            b.n,
+            100.0 * b.inside / b.n,
+            100.0 * base,
+            100.0 * b.pred / b.n,
+            b.brier / b.n,
+            base * (1.0 - base)
+        );
     }
-    let n = n as f64;
     println!(
-        "{n} unopened opponents, {:.1} ms per position (3 reads x 300 deals)",
-        1000.0 * t / (n / 2.5)
-    );
-    println!(
-        "true per inside 10-90%: {:.1}%   median off by {:.1}",
-        100.0 * inside as f64 / n,
-        med_err / n
-    );
-    println!("prob given to the true pair count: {:.1}%", 100.0 * pair_hit / n);
-    println!(
-        "ready now: truth {:.1}%  predicted {:.1}%   brier {:.4} vs base-rate {:.4}",
-        100.0 * base,
-        100.0 * pred / n,
-        brier / n,
-        brier0 / n
+        "opened: {okey_n}  points inside 10-90% {:.1}% (below {:.1}%, above {:.1}%)  okey brier {:.4}",
+        100.0 * pts_inside / okey_n,
+        100.0 * below / okey_n,
+        100.0 * above / okey_n,
+        okey_brier / okey_n
     );
 }
