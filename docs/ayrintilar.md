@@ -15,6 +15,12 @@ Her rakibin adının altında **tahmini eli** yazar: açmamışsa en iyi perinin
 
 Üst çubuktaki ☷ düğmesi atılan taşları, elinin durumunu, rakiplerin tahmini elinin ayrıntısını (per aralıklarının ve çift sayılarının ihtimalleri) ve görülmemiş taşları açar; ⚙ ayarları ve maç puanını. "Bu durumu kopyala" düğmesi o anki durumu metin olarak panoya alır; saçma bir öneri görürsen onu saklamak hatayı yeniden üretmeye yeter.
 
+### El kayıtları
+
+Uygulama her eli kendiliğinden kaydeder: girilen her hamle, o anda önerilen ilk üç hamle ve rakiplerin tahmini eli. El bitip yeni ele geçilince kayıt telefonun hafızasına eklenir; puanları yazdıysan onlar da kayda girer. Ayarlar → "Kayıtlı eller" bölümünden hepsini tek dosya olarak indirebilir, kopyalayabilir ya da silebilirsin. Bir el yaklaşık 50 KB tutar; tarayıcının yeri dolmadan önce 80 civarı el sığar, dolarsa uygulama uyarır. Tarayıcı verilerini silmek kayıtları da siler.
+
+Geri alma geçmişi de telefonda tutulur: sayfayı yenilesen ya da kapatıp açsan da son 150 girişi geri alabilirsin.
+
 ### Maç puanı
 
 El bitince program puan tablosunu açar. Senin puanın elinden hesaplanır; açmayan rakiplere 101 yazılır, açanlar için elinde kalan puanı girersin (çift açanınki iki katı alınır). El boyunca yazılan cezalar (işlek, okey atma, okeyi kaptırma, 7 çiftle açma) ve bitirenin katları (okey atarak, elden, çiftle) kendiliğinden eklenir. "Yeni el" puanları maç toplamına ekler; üst çubukta el numarası ve liderle aradaki fark görünür. Toplamlar ayarlardan düzeltilebilir, yeni maç da oradan başlar.

@@ -1,3 +1,4 @@
+mod replay;
 mod settings;
 mod state;
 
@@ -20,7 +21,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::{MessageEvent, Worker};
 
 const STORAGE_KEY: &str = "okey101.state.v2";
-const UNDO_LIMIT: usize = 300;
+const UNDO_LIMIT: usize = 150;
 const SEAT_OWNER: [&str; 4] = ["kendi", "Sağ'ın", "Karşı'nın", "Sol'un"];
 const OPPONENTS: [u8; 3] = [3, 2, 1];
 const READ_DEALS: usize = 200;
@@ -254,23 +255,57 @@ impl Ctx {
         let before = s.clone();
         match f(&mut s) {
             Ok(()) => {
+                let recorded = replay::on_act(&before, &s, self.shown(&before));
                 UNDO.with(|u| {
                     let mut u = u.borrow_mut();
                     u.push(before);
                     if u.len() > UNDO_LIMIT {
                         u.remove(0);
                     }
+                    replay::save_undo(&u);
                 });
                 save_state(&s);
                 self.st.set(s);
-                self.msg.set(None);
+                self.msg.set(recorded.err());
             }
             Err(e) => self.msg.set(Some(e)),
         }
     }
 
+    /// What the screen showed before an entry: my advice when it was my turn, and the estimates.
+    fn shown(&self, s: &State) -> Option<replay::Shown> {
+        if s.stage != Stage::Play {
+            return None;
+        }
+        let (advice, deals) = if s.turn == 0 {
+            self.analysis.with_untracked(|a| {
+                a.as_ref().and_then(|r| r.report.as_ref()).map_or((vec![], 0), |r| {
+                    let top = r.candidates.iter().take(3).map(|c| format!("{}: {:.1}", c.label, c.mean)).collect();
+                    (top, r.iterations)
+                })
+            })
+        } else {
+            (vec![], 0)
+        };
+        let reads = self.reads.get_untracked().map_or(vec![], |rs| {
+            [1u8, 2, 3]
+                .iter()
+                .filter_map(|&p| rs.iter().find(|r| r.seat == p))
+                .map(|r| read_lines(r, s).join(" · "))
+                .collect()
+        });
+        Some(replay::Shown { advice, deals, reads })
+    }
+
     fn undo(&self) {
-        if let Some(prev) = UNDO.with(|u| u.borrow_mut().pop()) {
+        let cur = self.st.get_untracked();
+        if let Some(prev) = UNDO.with(|u| {
+            let mut u = u.borrow_mut();
+            let prev = u.pop();
+            replay::save_undo(&u);
+            prev
+        }) {
+            replay::on_undo(&cur, &prev);
             save_state(&prev);
             self.st.set(prev);
             self.msg.set(None);
@@ -378,6 +413,7 @@ fn main() {
 
 #[component]
 fn App() -> impl IntoView {
+    UNDO.with(|u| *u.borrow_mut() = replay::load_undo());
     let st = RwSignal::new(load_state());
     let analysis: RwSignal<Option<Resp>> = RwSignal::new(None);
     let pick: RwSignal<Option<Choice>> = RwSignal::new(None);
@@ -510,6 +546,8 @@ fn App() -> impl IntoView {
                     <settings::Basics/>
                     <h3>"Maç"</h3>
                     <MatchBox/>
+                    <h3>"Kayıtlı eller"</h3>
+                    <Replays/>
                     <settings::Advanced/>
                 </Modal>
             </Show>
@@ -1842,6 +1880,65 @@ fn MatchBox() -> impl IntoView {
                 <button class="btn light danger wide" on:click=move |_| ctx.act(|s| { *s = s.new_match(); Ok(()) })>"Yeni maç başlat (puanları sıfırla)"</button>
             </details>
             <p class="muted">"Maç boyunca farkı açmaya oynar. Son iki elde puan tablosuna bakıp maçı kazanmaya oynar: gerideyken risk alır, öndeyken garantiye oynar."</p>
+        </div>
+    }
+}
+
+fn download(name: &str, text: &str) -> Option<()> {
+    let parts = js_sys::Array::of1(&JsValue::from_str(text));
+    let opts = web_sys::BlobPropertyBag::new();
+    opts.set_type("application/json");
+    let blob = web_sys::Blob::new_with_str_sequence_and_options(&parts, &opts).ok()?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob).ok()?;
+    let a: web_sys::HtmlAnchorElement = web_sys::window()?.document()?.create_element("a").ok()?.dyn_into().ok()?;
+    a.set_href(&url);
+    a.set_download(name);
+    a.click();
+    web_sys::Url::revoke_object_url(&url).ok()
+}
+
+#[component]
+fn Replays() -> impl IntoView {
+    let tick = RwSignal::new(0u32);
+    let note = RwSignal::new(None::<&'static str>);
+    let count = move || {
+        tick.get();
+        let all = replay::saved();
+        let done = all.iter().filter(|h| h.complete).count();
+        match all.len() {
+            0 => "Henüz kayıtlı el yok. Her el, puanı yazılıp yeni ele geçilince kendiliğinden kaydedilir.".to_string(),
+            n if done == n => format!("{n} el kayıtlı."),
+            n => format!("{n} el kayıtlı ({} tanesi puanı yazılmadan geçildi).", n - done),
+        }
+    };
+    let file = move |_| {
+        let day: String = js_sys::Date::new_0().to_iso_string().into();
+        let ok = download(&format!("okey101-eller-{}.json", &day[..10]), &replay::export()).is_some();
+        note.set(Some(if ok { "İndirildi." } else { "İndirilemedi; Kopyala ile dene." }));
+    };
+    let copy = move |_| {
+        if let Some(w) = web_sys::window() {
+            let _ = w.navigator().clipboard().write_text(&replay::export());
+            note.set(Some("Panoya kopyalandı."));
+        }
+    };
+    let clear = move |_| {
+        let sure = web_sys::window()
+            .and_then(|w| w.confirm_with_message("Bütün kayıtlı eller silinsin mi?").ok())
+            .unwrap_or(false);
+        if sure {
+            replay::clear();
+            tick.update(|t| *t += 1);
+            note.set(Some("Silindi."));
+        }
+    };
+    view! {
+        <div class="stack">
+            <p class="muted">{count}</p>
+            <button class="btn light wide" on:click=file>"Dosya olarak indir"</button>
+            <button class="btn light wide" on:click=copy>"Kopyala"</button>
+            <button class="btn light danger wide" on:click=clear>"Kayıtları sil"</button>
+            {move || note.get().map(|n| view! { <p class="muted">{n}</p> })}
         </div>
     }
 }
