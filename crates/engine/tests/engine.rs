@@ -740,7 +740,7 @@ fn opponent_reads_are_exact_for_a_known_hand_and_sum_to_one() {
     assert_eq!(reads.len(), 3);
     assert_eq!(reads[0].per, [exact; 3]);
     for r in &reads {
-        let bands: f32 = r.per_bands.iter().sum();
+        let bands: f32 = r.per_dist.iter().sum();
         let pairs: f32 = r.pairs.iter().sum();
         assert!((bands - 1.0).abs() < 1e-3 && (pairs - 1.0).abs() < 1e-3, "{bands} {pairs}");
         assert!(r.per[0] <= r.per[1] && r.per[1] <= r.per[2]);

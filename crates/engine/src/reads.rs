@@ -5,8 +5,6 @@ use crate::pairs::pair_stats;
 use crate::rng::Rng;
 use serde::{Deserialize, Serialize};
 
-/// Per totals are counted in bands of this width.
-pub const BAND: i32 = 10;
 pub const MAX_PAIRS: usize = 7;
 
 /// What one opponent's hidden hand probably holds, from many deals that fit what they have done.
@@ -17,8 +15,8 @@ pub struct Read {
     pub deals: u32,
     /// Best meld opening the hand holds now: 10%, 50% and 90% points of the deals.
     pub per: [i32; 3],
-    /// Share of deals per band of `BAND` (index = total / BAND).
-    pub per_bands: Vec<f32>,
+    /// Share of deals per best opening total (index = total).
+    pub per_dist: Vec<f32>,
     /// Share of deals with that many pairs; the last entry is `MAX_PAIRS` or more.
     pub pairs: Vec<f32>,
     pub meld_req: i32,
@@ -74,15 +72,15 @@ pub fn read_with(view: &View, deals: usize, seed: u64, opts: &Options) -> Vec<Re
         .map(|i| {
             let share = |k: usize| k as f32 / d;
             let top = pers[i].iter().copied().max().unwrap_or(0).max(meld_req);
-            let mut bands = vec![0f32; (top / BAND + 1) as usize];
-            pers[i].iter().for_each(|&v| bands[(v / BAND) as usize] += 1.0 / d);
+            let mut dist = vec![0f32; top as usize + 1];
+            pers[i].iter().for_each(|&v| dist[v as usize] += 1.0 / d);
             let mut pd = vec![0f32; MAX_PAIRS + 1];
             pairs[i].iter().for_each(|&n| pd[n.min(MAX_PAIRS)] += 1.0 / d);
             Read {
                 seat: i as u8 + 1,
                 opened: view.players[i + 1].opened,
                 deals: deals as u32,
-                per_bands: bands,
+                per_dist: dist,
                 p_melds: share(pers[i].iter().filter(|&&v| v >= meld_req).count()),
                 p_pairs: if view.rules.pairs_enabled {
                     share(pairs[i].iter().filter(|&&n| n >= pair_req as usize).count())

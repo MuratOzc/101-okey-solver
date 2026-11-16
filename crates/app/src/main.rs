@@ -9,7 +9,7 @@ use okey_engine::analysis::{
 use okey_engine::game::{Opened, Step};
 use okey_engine::meld::{Shape, pos_tile};
 use okey_engine::moves::{Act, Move};
-use okey_engine::reads::{BAND, MAX_PAIRS, Read, read_opponents};
+use okey_engine::reads::{MAX_PAIRS, Read, read_opponents};
 use okey_engine::table::{JokerSlot, LayOption, Side};
 use okey_engine::tile::*;
 use serde::{Deserialize, Serialize};
@@ -547,7 +547,7 @@ fn TopBar() -> impl IntoView {
                 let s = st.get();
                 let deck = (s.stage == Stage::Play).then(|| view! { <span class="chip">"Deste " <b>{s.deck_count}</b></span> });
                 let gost = s.gosterge.filter(|_| s.stage != Stage::Setup).map(|g| view! {
-                    <span class="chip">"Gösterge " {tile_view(g, None)} " okey " {tile_view(okey_of(g), None)}</span>
+                    <span class="chip"><span class="lbl">"Gösterge "</span>{tile_view(g, None)}<span class="lbl">" okey "</span><span class="arrow">"→"</span>{tile_view(okey_of(g), None)}</span>
                 });
                 let head = match s.stage {
                     Stage::Setup => Some("Yeni el"),
@@ -591,14 +591,17 @@ fn Seats() -> impl IntoView {
                     let takeable = p == 3 && s.stage == Stage::Play && s.turn == 0 && !s.may_act();
                     let name = seat_name(&s, p);
                     let initials: String = SEAT_NAMES[p as usize].chars().take(2).collect();
-                    let guess = ctx.reads.get().and_then(|rs| rs.into_iter().find(|r| r.seat == p)).map(|r| read_line(&r, &s));
+                    let guess = ctx.reads.get().and_then(|rs| rs.into_iter().find(|r| r.seat == p)).map(|r| read_lines(&r, &s)).unwrap_or_default();
                     view! {
                         <div class="seat" class:cur=cur>
                             <span class="av">{initials}</span>
                             <span class="who">
                                 <b>{name}</b>
-                                <small>{format!("{count} taş")} {badge.map(|b| view! { " · " <span class="open">{b}</span> })}</small>
-                                {guess.map(|g| view! { <small class="guess" title="Tahmini eli">{g}</small> })}
+                                <small class="cnt">{format!("{count} taş")}</small>
+                                <small class="extra">
+                                    {badge.map(|b| view! { <span class="open">{b}</span> })}
+                                    {guess.into_iter().map(|g| view! { <span class="gl" title="Tahmini eli">{g}</span> }).collect_view()}
+                                </small>
                             </span>
                             <span class="last" class:take=takeable title="Son attığı">
                                 {pv.discards.last().map(|&t| tile_view(t, okey))}
@@ -1954,17 +1957,40 @@ fn pairs_text(dist: &[f32]) -> String {
     }
 }
 
-fn read_line(r: &Read, s: &State) -> String {
+fn read_lines(r: &Read, s: &State) -> Vec<String> {
     match r.opened {
         Opened::No => {
-            let mut parts = vec![format!("per {}–{}", s.total(r.per[0]), s.total(r.per[2]))];
-            if s.rules.pairs_enabled {
-                parts.push(pairs_text(&r.pairs));
-            }
-            parts.push(format!("açabilir {}", share(r.p_either)));
-            parts.join(" · ")
+            let odds = format!("açar {}", share(r.p_either));
+            let second = if s.rules.pairs_enabled {
+                format!("{} · {odds}", pairs_text(&r.pairs))
+            } else {
+                odds
+            };
+            vec![format!("per {}–{}", s.total(r.per[0]), s.total(r.per[2])), second]
         }
-        _ => format!("elinde {}–{} puan", r.points[0], r.points[2]),
+        _ => vec![format!("elinde {}–{} puan", r.points[0], r.points[2])],
+    }
+}
+
+/// Bands of the best opening total: 10 points, or 3 whole pers (9 points) when totals are said in thirds.
+fn per_bands(dist: &[f32], yan: bool) -> Vec<(i32, i32, f32)> {
+    let width = if yan { 9 } else { 10 };
+    let mut out: Vec<(i32, i32, f32)> = Vec::new();
+    for (v, &x) in dist.iter().enumerate() {
+        let lo = v as i32 / width * width;
+        match out.last_mut() {
+            Some(last) if last.0 == lo => last.2 += x,
+            _ => out.push((lo, lo + width - 1, x)),
+        }
+    }
+    out
+}
+
+fn band_label(lo: i32, hi: i32, yan: bool) -> String {
+    if yan {
+        format!("{}–{}", lo / 3, hi / 3)
+    } else {
+        format!("{lo}–{hi}")
     }
 }
 
@@ -1981,17 +2007,14 @@ fn Reads() -> impl IntoView {
             .map(|r| {
                 let detail = match r.opened {
                     Opened::No => {
-                        let bands = r
-                            .per_bands
-                            .iter()
-                            .enumerate()
-                            .filter(|&(_, &x)| x >= 0.03)
-                            .map(|(i, &x)| {
-                                let lo = i as i32 * BAND;
-                                let reach = lo + BAND > r.meld_req;
+                        let bands = per_bands(&r.per_dist, s.yan)
+                            .into_iter()
+                            .filter(|&(_, _, x)| x >= 0.03)
+                            .map(|(lo, hi, x)| {
+                                let reach = hi >= r.meld_req;
                                 view! {
                                     <div class="rbar" class:reach=reach>
-                                        <span class="bl">{format!("{}–{}", s.total(lo), s.total(lo + BAND - 1))}</span>
+                                        <span>{band_label(lo, hi, s.yan)}</span>
                                         <span class="bt"><span class="bf" style=format!("width:{:.0}%", x * 100.0)></span></span>
                                         <span class="bp">{share(x)}</span>
                                     </div>
