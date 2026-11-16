@@ -1990,7 +1990,7 @@ fn Reads() -> impl IntoView {
                                 let lo = i as i32 * BAND;
                                 let reach = lo + BAND > r.meld_req;
                                 view! {
-                                    <div class="bar" class:reach=reach>
+                                    <div class="rbar" class:reach=reach>
                                         <span class="bl">{format!("{}–{}", s.total(lo), s.total(lo + BAND - 1))}</span>
                                         <span class="bt"><span class="bf" style=format!("width:{:.0}%", x * 100.0)></span></span>
                                         <span class="bp">{share(x)}</span>
@@ -2027,7 +2027,7 @@ fn Reads() -> impl IntoView {
                             <div class="muted">
                                 {format!("En iyi per: büyük ihtimalle {} (%80 aralık {}–{})", s.total(r.per[1]), s.total(r.per[0]), s.total(r.per[2]))}
                             </div>
-                            <div class="bars">{bands}</div>
+                            <div class="rbars">{bands}</div>
                             {pairs}
                             <div>{odds}</div>
                         }
