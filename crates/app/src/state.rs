@@ -434,6 +434,12 @@ impl State {
         if !self.may_act() {
             return Err("Önce taş çekilmeli (desteden ya da yandan)".into());
         }
+        if let Some(x) = self.taken.filter(|_| self.rules.take_must_use) {
+            return Err(format!(
+                "Yandan aldığı {} bu tur kullanılmalı: onunla per aç ya da işle, değilse Geri al.",
+                name(x)
+            ));
+        }
         let finishing = p == 0 && self.hand.len() == 1;
         let pen = if finishing {
             0
@@ -961,9 +967,11 @@ mod tests {
         s.key(t("K7")).unwrap();
         s.opp_draw().unwrap();
         s.key(t("M7")).unwrap();
+        s.rules.take_must_use = false;
         s.take_side().unwrap();
         assert_eq!(s.players[3].known, vec![t("M7")]);
         s.key(t("Si8")).unwrap();
+        s.rules.take_must_use = true;
         assert_eq!(s.players[3].known, vec![t("M7")], "a taken tile stays known until it is shown");
         assert!(s.view().is_some_and(|v| v.phase == Phase::BeforeDraw));
         assert!(!s.can_take(), "Si8 fits no meld of mine, so it cannot be used to open");
@@ -971,6 +979,22 @@ mod tests {
         assert_eq!(s.mode, Mode::PickDraw);
         s.key(t("K6")).unwrap();
         assert!(s.view().is_some_and(|v| v.phase == Phase::AfterDraw));
+    }
+
+    #[test]
+    fn a_side_taken_tile_must_be_used_before_the_discard() {
+        let mut s = started();
+        s.discard(0, t("Si13")).unwrap();
+        for d in ["K7", "M7"] {
+            s.opp_draw().unwrap();
+            s.key(t(d)).unwrap();
+        }
+        s.take_side().unwrap();
+        assert!(s.discard(3, t("Si8")).is_err(), "M7 was taken and not laid");
+        enter_meld(&mut s, "M6 M7 M8");
+        enter_meld(&mut s, "K9 K10 K11");
+        enter_meld(&mut s, "S9 S10 S11 S12 S13");
+        s.discard(3, t("Si8")).unwrap();
     }
 
     #[test]
