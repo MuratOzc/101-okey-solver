@@ -10,7 +10,7 @@ use okey_engine::analysis::{
 use okey_engine::game::{Opened, Step};
 use okey_engine::meld::{Shape, pos_tile};
 use okey_engine::moves::{Act, Move};
-use okey_engine::reads::{MAX_PAIRS, Read, read_opponents};
+use okey_engine::reads::{MAX_PAIRS, Now, Read, read_opponents};
 use okey_engine::table::{JokerSlot, LayOption, Side};
 use okey_engine::tile::*;
 use serde::{Deserialize, Serialize};
@@ -457,6 +457,13 @@ fn App() -> impl IntoView {
                 .and_then(|v| serde_json::to_string(&v).ok())
         })
     });
+    let now_key = Memo::new(move |_| {
+        st.with(|s| Now {
+            seat: s.turn,
+            drawn: s.drawn,
+            taken: s.taken,
+        })
+    });
     let ctx = Ctx {
         st,
         msg: RwSignal::new(None),
@@ -475,10 +482,11 @@ fn App() -> impl IntoView {
             })
         }),
         reads: Memo::new(move |_| {
+            let now = now_key.get();
             view_key
                 .get()
                 .and_then(|j| serde_json::from_str::<View>(&j).ok())
-                .map(|v| read_opponents(&v, READ_DEALS, 11))
+                .map(|v| read_opponents(&v, now, READ_DEALS, 11))
         }),
     };
     provide_context(ctx);
@@ -2074,22 +2082,33 @@ fn read_lines(r: &Read, s: &State) -> Vec<String> {
             let odds = if no_turn_left(s, r.seat) {
                 "sırası gelmeyecek".to_string()
             } else {
-                format!("açar {}", share(r.p_either))
+                format!("açar {} · sonuna {}", share(r.p_open_soon), share(r.p_open_end))
             };
-            let second = if s.rules.pairs_enabled {
-                format!("{} · {odds}", pairs_text(&r.pairs))
-            } else {
-                odds
-            };
-            vec![format!("per {}–{}", s.total(r.per[0]), s.total(r.per[2])), second]
+            let mut lines = vec![format!("per {}–{}", s.total(r.per[0]), s.total(r.per[2]))];
+            if s.rules.pairs_enabled {
+                lines.push(pairs_text(&r.pairs));
+            }
+            lines.push(odds);
+            lines
         }
-        _ => vec![format!("elinde {}–{} puan{}", r.points[0], r.points[2], okey_share(r))],
+        _ => vec![
+            format!("elinde {}–{} puan{}", r.points[0], r.points[2], okey_share(r)),
+            format!("biter {} · sonuna {}", share(r.p_finish_soon), share(r.p_finish_end)),
+        ],
     }
 }
 
 /// The deck is empty and someone else is on turn: the hand ends before this seat plays again.
 fn no_turn_left(s: &State, seat: u8) -> bool {
     s.deck_count == 0 && s.turn != seat
+}
+
+fn finish_odds(r: &Read) -> String {
+    format!(
+        "Bitirir: sıra sana gelmeden {} · el bitene kadar {}",
+        share(r.p_finish_soon),
+        share(r.p_finish_end)
+    )
 }
 
 fn okey_share(r: &Read) -> String {
@@ -2164,18 +2183,21 @@ fn Reads() -> impl IntoView {
                         });
                         let odds = if no_turn_left(&s, r.seat) {
                             "Deste bitti, el sırası ona gelmeden bitecek: açamaz.".to_string()
-                        } else if s.rules.pairs_enabled {
-                            format!(
-                                "Şu an {}+ per açabilir {} · {} çift açabilir {} · ikisinden biri {}",
-                                s.total(r.meld_req),
-                                share(r.p_melds),
-                                r.pair_req,
-                                share(r.p_pairs),
-                                share(r.p_either)
-                            )
                         } else {
-                            format!("Şu an {}+ per açabilir {}", s.total(r.meld_req), share(r.p_melds))
+                            let ready = if s.rules.pairs_enabled {
+                                format!(
+                                    "Elinde şu an hazır: {}+ per {} · {} çift {}",
+                                    s.total(r.meld_req),
+                                    share(r.p_melds),
+                                    r.pair_req,
+                                    share(r.p_pairs)
+                                )
+                            } else {
+                                format!("Elinde şu an hazır: {}+ per {}", s.total(r.meld_req), share(r.p_melds))
+                            };
+                            format!("{ready}. Açar: sıra sana gelmeden {} · el bitene kadar {}", share(r.p_open_soon), share(r.p_open_end))
                         };
+                        let finish = finish_odds(&r);
                         view! {
                             <div class="muted">
                                 {format!("En iyi per: büyük ihtimalle {} (%80 aralık {}–{})", s.total(r.per[1]), s.total(r.per[0]), s.total(r.per[2]))}
@@ -2183,10 +2205,12 @@ fn Reads() -> impl IntoView {
                             <div class="rbars">{bands}</div>
                             {pairs}
                             <div>{odds}</div>
+                            <div>{finish}</div>
                         }
                         .into_any()
                     }
                     _ => view! {
+                        <div>{finish_odds(&r)}</div>
                         <div>{format!("El şimdi bitse elindeki taşlar: büyük ihtimalle {} puan (%80 aralık {}–{}), okey sayılmadan", r.points[1], r.points[0], r.points[2])}</div>
                         <div>{format!("Elinde okey olma ihtimali {} (olursa +{} yazılır)", share(r.p_okey), s.rules.joker_in_hand)}</div>
                     }
@@ -2204,7 +2228,7 @@ fn Reads() -> impl IntoView {
             <p class="muted">
                 "Görülmemiş taşlar 200 kez dağıtılıp sayılır; rakiplerin attığı taşlara ve açmamış olmalarına uyan dağıtımlar daha çok sayılır. "
                 "Açabilecek eli olup açmamak destede taş azaldıkça ihtimal dışı sayılır, çünkü açmayana 101 yazılır. "
-                "El başında elini tutup geç açanlarda açabilme ihtimali olduğundan düşük, hazır olunca hemen açanlarda yüksek çıkar."
+                "Açar ve bitirir ihtimalleri için her dağıtım elin sonuna kadar oynanır; herkesin açabildiği an açtığı varsayılır."
             </p>
             {rows}
         })

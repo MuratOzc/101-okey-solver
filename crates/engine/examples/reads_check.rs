@@ -44,7 +44,7 @@ fn main() {
             continue;
         }
         let view = public_view(&g, Phase::BeforeDraw, None);
-        for r in read_with(&view, 300, seed, infer) {
+        for r in read_with(&view, None, 300, seed, infer) {
             let p = &g.players[r.seat as usize];
             if p.opened != Opened::No {
                 let has = (p.hand[52] > 0) as i32 as f64;

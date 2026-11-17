@@ -11,7 +11,7 @@ Ekran ikiye ayrılır: masa (rakipler, son attıkları taşlar, açılan perler,
 
 Önerinin altında beklenen puan farkı, bitirme ihtimali ve attığın taşı sağdakinin alma ihtimali yazar. Program düşündükçe sayılar netleşir; beklemek zorunda değilsin.
 
-Her rakibin adının altında **tahmini eli** yazar: açmamışsa en iyi perinin %80 ihtimalle düştüğü aralık, çift sayısı ve şu an açabilme ihtimali; açmışsa okey sayılmadan elindeki puan aralığı ve elinde okey olma ihtimali. Bunlar senin görebildiğin taşlardan ve rakiplerin yaptıklarından çıkarılan tahminlerdir; rakibin tarzını bilmez.
+Her rakibin adının altında **tahmini eli** yazar: açmamışsa en iyi perinin %80 ihtimalle düştüğü aralık, çift sayısı ve açma ihtimali ("açar %20 · sonuna %45": sıra sana gelmeden %20, el bitene kadar %45); açmışsa okey sayılmadan elindeki puan aralığı ve aynı biçimde bitirme ihtimali. Bunlar senin görebildiğin taşlardan ve rakiplerin yaptıklarından çıkarılan tahminlerdir; rakibin tarzını bilmez.
 
 Üst çubuktaki ☷ düğmesi atılan taşları, elinin durumunu, rakiplerin tahmini elinin ayrıntısını ve görülmemiş taşları açar; ⚙ ayarları ve maç puanını. "Bu durumu kopyala" o anki durumu metin olarak panoya alır; saçma bir öneri görürsen bunu saklamak hatayı yeniden üretmeye yeter.
 
