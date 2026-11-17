@@ -574,7 +574,17 @@ impl State {
     }
 
     pub fn buffer_shape(&self) -> Option<Shape> {
-        classify(&self.buffer, &self.rules)
+        classify(&self.buffer, &self.rules).or_else(|| self.gosterge_pair())
+    }
+
+    /// The gösterge's twin with any other tile, for whoever was dealt it. Opponents are taken at
+    /// their word; I only had it if it was in my dealt hand.
+    fn gosterge_pair(&self) -> Option<Shape> {
+        let g = self.gosterge.filter(|_| self.rules.gosterge_pair)?;
+        let &[a, b] = self.buffer.as_slice() else { return None };
+        let other = if a == g { b } else if b == g { a } else { return None };
+        let dealt = self.turn != 0 || self.players[0].gosterge_bonus;
+        (other != JOKER && dealt).then_some(Shape::GostergePair { gosterge: g, other })
     }
 
     /// Why the buffer cannot be laid as a new meld right now, if it cannot.
@@ -612,6 +622,9 @@ impl State {
         let value = if as_pair { 1 } else { shape.open_value(&self.rules) };
         let opening = self.opened_this_turn;
         let pv = &mut self.players[p as usize];
+        if matches!(shape, Shape::GostergePair { .. }) {
+            pv.gosterge_bonus = true;
+        }
         if pv.opened == Opened::No {
             pv.opened = if as_pair { Opened::Pairs } else { Opened::Melds };
             pv.open_value = value;
@@ -997,6 +1010,29 @@ mod tests {
         );
         assert_eq!(s.players[1].hand_len, Some(10));
         assert_eq!(s.swap_options(0).len(), 1, "whoever holds M5 could now take the okey back");
+    }
+
+    #[test]
+    fn the_gosterge_twin_pairs_with_any_tile() {
+        let mut s = started();
+        s.discard(0, t("Si13")).unwrap();
+        s.opp_draw().unwrap();
+        for p in ["S7 K7", "K8 K8", "M6 M6", "Si2 Si2", "S4 S4"] {
+            enter_meld(&mut s, p);
+        }
+        assert_eq!(s.table.melds[0].shape, Shape::GostergePair { gosterge: t("S7"), other: t("K7") });
+        assert_eq!(s.players[1].opened, Opened::Pairs);
+        assert_eq!(s.players[1].open_value, 5);
+        assert!(s.opening_complete());
+
+        let mut s = started();
+        s.hand.retain(|&x| x != t("S1"));
+        s.hand.extend([t("S7"), t("K7")]);
+        s.mode = Mode::Manual;
+        s.buffer = vec![t("S7"), t("K7")];
+        assert!(s.buffer_shape().is_none(), "I was not dealt the gösterge");
+        s.players[0].gosterge_bonus = true;
+        assert!(s.buffer_shape().is_some_and(|sh| sh.is_pair()));
     }
 
     #[test]
