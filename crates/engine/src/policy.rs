@@ -80,14 +80,22 @@ impl Policy {
         w_pair_keep: 0.0,
     };
 
-    /// How people at the table actually play: for the finish, not for points. Opens as soon as it
-    /// can, with as few tiles left as possible, and keeps pairs for whoever opens with pairs.
+    /// Plays for the finish, not for points: opens as soon as it can, with as few tiles left as
+    /// possible, and keeps pairs for whoever opens with pairs.
     pub const FINISHER: Policy = Policy {
         hold_deck_quiet: 99,
         hold_deck_active: 99,
         open_style: OpenStyle::MaxCover,
         w_pair_keep: 60.0,
         ..Policy::TUNED
+    };
+
+    /// Like `FINISHER`, but sits on a ready opening until the last round of the deck, as the user's
+    /// table does. The search assumes it of every opponent.
+    pub const HOLDER: Policy = Policy {
+        hold_deck_quiet: 4,
+        hold_deck_active: 4,
+        ..Policy::FINISHER
     };
 
     pub fn varied(rng: &mut crate::rng::Rng) -> Policy {

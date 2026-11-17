@@ -1,10 +1,9 @@
-use crate::analysis::View;
+use crate::analysis::{Options, View};
 use crate::game::{Game, Opened, Outcome};
 use crate::meld::{Solver, hand_penalty};
 use crate::pairs::pair_stats;
-use crate::policy::Policy;
 use crate::rng::Rng;
-use crate::tile::{Counts, JOKER, NIDS, Tile, counts_from};
+use crate::tile::{JOKER, Tile};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_PAIRS: usize = 7;
@@ -53,67 +52,9 @@ pub struct Now {
     pub taken: Option<Tile>,
 }
 
-/// Draws each player has made so far, about: the deck is shared out evenly between the seats.
-fn draws_so_far(view: &View) -> usize {
-    let dealt = view.rules.hand_size as usize * 4 + view.rules.starter_extra as usize;
-    let first_deck = 106usize.saturating_sub(dealt + 1);
-    first_deck.saturating_sub(view.deck_count as usize).div_ceil(4)
-}
-
-/// A random deal gives an unopened opponent a hand as loose as the deck, but a real one has been
-/// built: every turn the player kept what fitted and threw what did not. Replay those turns with
-/// tiles that could have come instead, from the deck or another opponent's unknown tiles.
-fn build_hands(g: &mut Game, view: &View, sv: &mut Solver, rng: &mut Rng) {
-    let known: Vec<Counts> = view.players.iter().map(|p| counts_from(&p.known)).collect();
-    let free = |g: &Game, q: usize, t: usize| g.players[q].hand[t].saturating_sub(known[q][t]);
-    // Half the turns: replaying all of them made openings likelier than in bot play (50% against 47%).
-    for _ in 0..draws_so_far(view).div_ceil(2) {
-        for o in 1..4usize {
-            if g.players[o].opened != Opened::No {
-                continue;
-            }
-            let mut src: Vec<(usize, Tile)> = g.deck.iter().map(|&t| (0, t)).collect();
-            for q in (1..4).filter(|&q| q != o) {
-                for t in 0..NIDS {
-                    for _ in 0..free(g, q, t) {
-                        src.push((q, t as Tile));
-                    }
-                }
-            }
-            if src.is_empty() {
-                return;
-            }
-            let (from, t) = src[rng.below(src.len())];
-            g.players[o].hand[t as usize] += 1;
-            let Some(d) = g
-                .discard_scores(sv, o as u8)
-                .into_iter()
-                .filter(|&(d, _)| free(g, o, d as usize) > 0)
-                .min_by_key(|&(_, s)| s)
-                .map(|(d, _)| d)
-            else {
-                g.players[o].hand[t as usize] -= 1;
-                continue;
-            };
-            g.players[o].hand[d as usize] -= 1;
-            if d == t {
-                continue;
-            }
-            if from == 0 {
-                let i = g.deck.iter().position(|&x| x == t).expect("drawn from the deck");
-                g.deck[i] = d;
-            } else {
-                g.players[from].hand[t as usize] -= 1;
-                g.players[from].hand[d as usize] += 1;
-            }
-        }
-    }
-}
-
-/// Plays the hand out with bots that open the moment they can. For seats 1–3: opened before my
+/// Plays the hand out with the bots the search assumes. For seats 1–3: opened before my
 /// next turn, opened by the end, finished before my next turn, finished.
 fn play_ahead(g: &mut Game, sv: &mut Solver, now: Now) -> [[bool; 4]; 3] {
-    g.policy = [Policy::FINISHER; 4];
     g.current = now.seat;
     let mut out = [[false; 4]; 3];
     let mut soon = true;
@@ -146,15 +87,6 @@ fn play_ahead(g: &mut Game, sv: &mut Solver, now: Now) -> [[bool; 4]; 3] {
     }
 }
 
-/// How likely a player is to sit on an opening they could lay, by how many tiles are left in the deck.
-/// Early on some players hold one back; near the end nobody does, since not opening costs 101.
-pub fn holds_ready(deck: u8) -> f32 {
-    const EARLY: f32 = 0.5;
-    const LATE: f32 = 0.02;
-    let t = ((deck as f32 - 4.0) / 16.0).clamp(0.0, 1.0);
-    LATE + (EARLY - LATE) * t
-}
-
 fn quantiles(v: &mut [(i32, f32)]) -> [i32; 3] {
     let total: f32 = v.iter().map(|x| x.1).sum();
     if v.is_empty() || total <= 0.0 {
@@ -185,7 +117,7 @@ pub fn read_with(view: &View, now: Option<Now>, deals: usize, seed: u64, infer: 
     let mut rng = Rng::new(seed);
     let mut sv = Solver::new(&view.rules);
     let (meld_req, pair_req) = view.requirements();
-    let hold = holds_ready(view.deck_count);
+    let policy = Options::default().policy;
     let mut pers = [vec![], vec![], vec![]];
     let mut pairs = [vec![], vec![], vec![]];
     let mut points = [vec![], vec![], vec![]];
@@ -197,15 +129,11 @@ pub fn read_with(view: &View, now: Option<Now>, deals: usize, seed: u64, infer: 
     let mut total = 0f32;
     for _ in 0..deals {
         let mut g = view.determinize(&mut rng);
+        g.policy = [policy; 4];
         if infer {
-            g.policy = [Policy::FINISHER; 4];
-            build_hands(&mut g, view, &mut sv, &mut rng);
+            view.build_hands(&mut g, &mut sv, &mut rng);
         }
-        let w = if infer {
-            view.plausibility_with(&g, &mut sv, Some(hold))
-        } else {
-            1.0
-        };
+        let w = if infer { view.plausibility_with(&g, &mut sv, None) } else { 1.0 };
         total += w;
         for o in 1..4usize {
             let i = o - 1;

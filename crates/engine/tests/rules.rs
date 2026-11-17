@@ -4,6 +4,7 @@
 use okey_engine::analysis::*;
 use okey_engine::game::*;
 use okey_engine::meld::*;
+use okey_engine::policy::Policy;
 use okey_engine::rng::Rng;
 use okey_engine::rules::Rules;
 use okey_engine::table::*;
@@ -1012,7 +1013,11 @@ fn the_analysis_tells_who_draws_the_last_tile() {
         taken: None,
         stakes: None,
     };
-    let mut a = Analyzer::new(view, 1).unwrap();
+    let opts = Options {
+        policy: Policy::FINISHER,
+        ..Options::default()
+    };
+    let mut a = Analyzer::with_options(view, 1, opts).unwrap();
     a.step(300);
     let r = a.report();
     let draw = r.candidates.iter().find(|c| c.decision == Decision::Draw).unwrap();

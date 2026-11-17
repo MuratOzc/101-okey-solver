@@ -386,14 +386,13 @@ fn late_results_count_only_for_what_is_still_alive() {
 }
 
 #[test]
-fn inference_makes_ready_but_unopened_opponents_rarer() {
+fn ready_but_unopened_counts_against_a_deal_only_in_the_last_round() {
     let mut view = sample_view(Phase::AfterDraw);
-    view.deck_count = 8;
     for p in 1..4 {
         view.players[p].discards = vec![t(["K1", "M2", "Si3"][p - 1])];
     }
     let mut sv = Solver::new(&view.rules);
-    let ready = |infer: bool, sv: &mut Solver| {
+    let ready = |view: &View, infer: bool, sv: &mut Solver| {
         let opts = Options {
             infer,
             ..Options::default()
@@ -406,12 +405,23 @@ fn inference_makes_ready_but_unopened_opponents_rarer() {
             })
             .count()
     };
-    let (plain, inferred) = (ready(false, &mut sv), ready(true, &mut sv));
+    view.deck_count = 8;
+    let plain = ready(&view, false, &mut sv);
     assert!(
         plain > 20,
         "uniform deals often hand an unopened opponent a ready opening ({plain}/400)"
     );
-    assert!(inferred * 2 < plain, "inference should make that much rarer: {inferred} vs {plain}");
+    let early = ready(&view, true, &mut sv);
+    assert!(
+        early * 4 > plain * 3,
+        "players sit on ready openings until the last round: {early} vs {plain}"
+    );
+    view.deck_count = 3;
+    let (plain, late) = (ready(&view, false, &mut sv), ready(&view, true, &mut sv));
+    assert!(
+        late * 2 < plain,
+        "in the last round a ready hand would have been laid: {late} vs {plain}"
+    );
 }
 
 #[test]

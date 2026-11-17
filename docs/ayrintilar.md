@@ -52,7 +52,7 @@ Kuralların hepsi "Kurallar" ekranından değiştirilebilir. Varsayılanlar:
 
 1. **Bütün yasal hamleler üretilir:** açma, çift açma, işleme, okey alma ve atılacak taşın her birleşimi.
 2. **Bilinmeyen taşlar rastgele dağıtılır.** Rakiplerin eli ve deste görülmemiş taşlardan çekilir; rakiplerin attığı taşlar ve açmamış olmaları ipucu olarak kullanılır.
-3. **Her hamle aynı dağıtımlarda oynatılır.** Rakipleri botlar, senin sonraki turunu eğitilmiş bir yapay zekâ oynar. Bütün hamleler aynı dağıtımları gördüğü için aradaki fark şansa değil hamleye aittir.
+3. **Her hamle aynı dağıtımlarda oynatılır.** Rakipleri, açılışını destenin son turuna kadar saklayan botlar, senin sonraki turunu eğitilmiş bir yapay zekâ oynar. Bütün hamleler aynı dağıtımları gördüğü için aradaki fark şansa değil hamleye aittir.
 4. **Açıkça geride kalan hamleler elenir**, kalan süre yakın olanlara harcanır.
 5. **Sıralama** el modunda ortalama puan farkına, maçın son iki elinde maçı kazanma ihtimaline göre yapılır.
 

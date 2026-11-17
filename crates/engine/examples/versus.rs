@@ -99,6 +99,7 @@ fn kind(spec: &str) -> &str {
 fn policy_of(spec: &str) -> Policy {
     match kind(spec) {
         "finisher" => Policy::FINISHER,
+        "holder" => Policy::HOLDER,
         "basic" => Policy::BASIC,
         _ => Policy::TUNED,
     }
@@ -125,7 +126,7 @@ fn seat(spec: &str, nets: &Nets, seed: u64, table: [&str; 4]) -> Box<dyn Agent> 
     };
     let mut parts = spec.split('+');
     match parts.next().unwrap() {
-        "finisher" | "tuned" | "basic" => bot(policy_of(spec)),
+        "finisher" | "holder" | "tuned" | "basic" => bot(policy_of(spec)),
         "god" => Box::new(OracleAgent {
             label: spec.into(),
             policy: Policy::TUNED,
@@ -152,6 +153,10 @@ fn seat(spec: &str, nets: &Nets, seed: u64, table: [&str; 4]) -> Box<dyn Agent> 
                     }
                 } else if o == "blind" {
                     opts.infer = false;
+                } else if o == "hold" {
+                    opts.policy = Policy::HOLDER;
+                } else if o == "built" {
+                    opts.build = true;
                 } else if let Some(h) = o.strip_prefix('h') {
                     opts.horizon = h.parse().expect("horizon");
                 } else if !o.starts_with("n=") {

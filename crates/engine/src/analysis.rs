@@ -411,6 +411,8 @@ pub struct Options {
     /// With the network playing my later turns: stop each simulation after this many of them and take
     /// what the network expects from there. 0 plays every simulation to the end of the hand.
     pub horizon: u8,
+    /// Give unopened opponents hands built over their turns so far instead of loose random ones.
+    pub build: bool,
 }
 
 /// How the network plays my later turns inside one simulation.
@@ -426,12 +428,13 @@ impl Default for Options {
     fn default() -> Self {
         Options {
             rich_moves: true,
-            policy: Policy::FINISHER,
+            policy: Policy::HOLDER,
             max_discards: 12,
             infer: true,
             exhaustive: true,
             lookahead: false,
             horizon: 1,
+            build: false,
         }
     }
 }
@@ -441,6 +444,10 @@ const DISCARD_FITS: f32 = 0.35;
 /// …or is sitting on an opening they would normally have laid down.
 const UNOPENED_BUT_READY: f32 = 0.2;
 const INFER_TRIES: usize = 12;
+/// A player's throwing style counts once this many of their discards are seen…
+const STYLE_AFTER: usize = 2;
+/// …and picks among this many of the tiles their hand needs least.
+const STYLE_CHOICES: usize = 3;
 const DISCARDS_REMEMBERED: usize = 4;
 /// Whether `d` would complete a run or a group with two tiles of `hand`.
 fn completes(hand: &Counts, d: Tile) -> bool {
@@ -490,19 +497,99 @@ impl View {
 
     /// A deal of the hidden tiles, optionally drawn in proportion to how plausible it is.
     pub fn sample(&self, rng: &mut Rng, sv: &mut Solver, opts: &Options) -> Game {
-        let mut g = self.determinize(rng);
-        g.policy = [opts.policy; 4];
+        let deal = |rng: &mut Rng, sv: &mut Solver| {
+            let mut g = self.determinize(rng);
+            g.policy = [opts.policy; 4];
+            if opts.build {
+                self.build_hands(&mut g, sv, rng);
+            }
+            g
+        };
+        let mut g = deal(rng, sv);
         if opts.infer {
             for _ in 0..INFER_TRIES {
                 let w = self.plausibility(&g, sv);
                 if (rng.below(10_000) as f32) < w * 10_000.0 {
                     break;
                 }
-                g = self.determinize(rng);
-                g.policy = [opts.policy; 4];
+                g = deal(rng, sv);
             }
         }
         g
+    }
+
+    /// Draws each player has made so far, about: the deck is shared out evenly between the seats.
+    fn draws_so_far(&self) -> usize {
+        let dealt = self.rules.hand_size as usize * 4 + self.rules.starter_extra as usize;
+        let first_deck = 106usize.saturating_sub(dealt + 1);
+        first_deck.saturating_sub(self.deck_count as usize).div_ceil(4)
+    }
+
+    /// A random deal gives an unopened opponent a hand as loose as the deck, but a real one has been
+    /// built: every turn the player kept what fitted and threw what did not. Replay half of those turns
+    /// with tiles that could have come instead, from the deck or another opponent's unknown tiles.
+    /// Among the tiles the hand needs least, the one thrown is the one closest in number to what that
+    /// player has been throwing, so a player who throws low tiles ends up holding high ones.
+    pub(crate) fn build_hands(&self, g: &mut Game, sv: &mut Solver, rng: &mut Rng) {
+        let known: Vec<Counts> = self.players.iter().map(|p| counts_from(&p.known)).collect();
+        let free = |g: &Game, q: usize, t: usize| g.players[q].hand[t].saturating_sub(known[q][t]);
+        let style: Vec<Option<f32>> = self
+            .players
+            .iter()
+            .map(|p| {
+                let nums: Vec<f32> = p.discards.iter().filter(|&&t| t != JOKER).map(|&t| num(t) as f32).collect();
+                (nums.len() >= STYLE_AFTER).then(|| nums.iter().sum::<f32>() / nums.len() as f32)
+            })
+            .collect();
+        // Half the turns: replaying all of them made openings likelier than in bot play (50% against 47%).
+        for _ in 0..self.draws_so_far().div_ceil(2) {
+            for o in 1..4usize {
+                if g.players[o].opened != Opened::No {
+                    continue;
+                }
+                let mut src: Vec<(usize, Tile)> = g.deck.iter().map(|&t| (0, t)).collect();
+                for q in (1..4).filter(|&q| q != o) {
+                    for t in 0..NIDS {
+                        for _ in 0..free(g, q, t) {
+                            src.push((q, t as Tile));
+                        }
+                    }
+                }
+                if src.is_empty() {
+                    return;
+                }
+                let (from, t) = src[rng.below(src.len())];
+                g.players[o].hand[t as usize] += 1;
+                let mut ranked: Vec<(Tile, i32)> = g
+                    .discard_scores(sv, o as u8)
+                    .into_iter()
+                    .filter(|&(d, _)| d != JOKER && free(g, o, d as usize) > 0)
+                    .collect();
+                ranked.sort_by_key(|&(_, keep)| keep);
+                let pick = match style[o] {
+                    Some(m) => ranked
+                        .iter()
+                        .take(STYLE_CHOICES)
+                        .min_by(|a, b| (num(a.0) as f32 - m).abs().total_cmp(&(num(b.0) as f32 - m).abs())),
+                    None => ranked.first(),
+                };
+                let Some(&(d, _)) = pick else {
+                    g.players[o].hand[t as usize] -= 1;
+                    continue;
+                };
+                g.players[o].hand[d as usize] -= 1;
+                if d == t {
+                    continue;
+                }
+                if from == 0 {
+                    let i = g.deck.iter().position(|&x| x == t).expect("drawn from the deck");
+                    g.deck[i] = d;
+                } else {
+                    g.players[from].hand[t as usize] -= 1;
+                    g.players[from].hand[d as usize] += 1;
+                }
+            }
+        }
     }
 }
 

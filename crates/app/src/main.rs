@@ -2227,8 +2227,9 @@ fn Reads() -> impl IntoView {
         Some(view! {
             <p class="muted">
                 "Görülmemiş taşlar 200 kez dağıtılıp sayılır; rakiplerin attığı taşlara ve açmamış olmalarına uyan dağıtımlar daha çok sayılır. "
-                "Açabilecek eli olup açmamak destede taş azaldıkça ihtimal dışı sayılır, çünkü açmayana 101 yazılır. "
-                "Açar ve bitirir ihtimalleri için her dağıtım elin sonuna kadar oynanır; herkesin açabildiği an açtığı varsayılır."
+                "Herkesin açılışını destenin son turuna kadar sakladığı varsayılır; açmamış olmak ancak son turda eli hazır değil demektir. "
+                "Rakibin eli, attığı taşlara bakılarak kurulur: küçük taş atan büyük taş tutar. "
+                "Açar ve bitirir ihtimalleri için her dağıtım elin sonuna kadar oynanır."
             </p>
             {rows}
         })
