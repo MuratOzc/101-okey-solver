@@ -747,3 +747,54 @@ fn opponent_reads_are_exact_for_a_known_hand_and_sum_to_one() {
         assert!(r.p_either >= r.p_melds.max(r.p_pairs) - 1e-6);
     }
 }
+
+#[test]
+fn an_okey_entered_first_or_last_stands_at_that_end() {
+    let r = Rules::default();
+    let run = |s: &str| {
+        classify(
+            &s.split_whitespace()
+                .map(|x| if x == "OK" { JOKER } else { t(x) })
+                .collect::<Vec<_>>(),
+            &r,
+        )
+        .unwrap()
+    };
+    let low = Shape::Run {
+        color: 3,
+        lo: 7,
+        hi: 11,
+        jokers: 1 << 7,
+    };
+    let high = Shape::Run {
+        color: 3,
+        lo: 8,
+        hi: 12,
+        jokers: 1 << 12,
+    };
+    assert_eq!(run("OK Si8 Si9 Si10 Si11"), low);
+    assert_eq!(run("Si11 Si10 Si9 Si8 OK"), low);
+    assert_eq!(run("Si8 Si9 Si10 Si11 OK"), high);
+    assert_eq!(run("OK Si11 Si10 Si9 Si8"), high);
+    assert_eq!(run("Si9 Si8 Si10 Si11 OK"), high, "out of order falls back to the top end");
+    assert_eq!(
+        run("OK K1 K2"),
+        Shape::Run {
+            color: 0,
+            lo: 1,
+            hi: 3,
+            jokers: 1 << 3
+        },
+        "nothing below 1"
+    );
+    assert_eq!(
+        run("K12 K13 OK"),
+        Shape::Run {
+            color: 0,
+            lo: 11,
+            hi: 13,
+            jokers: 1 << 11
+        },
+        "nothing above 13"
+    );
+}

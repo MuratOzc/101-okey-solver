@@ -7,7 +7,7 @@ Ekran ikiye ayrılır: masa (rakipler, son attıkları taşlar, açılan perler,
 1. **Gösterge**, **kim başlıyor** ve **taşların** sorulur. Taşlar taş seçiciden tek dokunuşla girilir; bir taşın son kopyası kaldığında altında nokta çıkar, kalmadığında soluklaşır. Yanlış girdiğin taşa yeşil alanda dokunursan silinir.
 2. Sıra sendeyken panel **öneriyi** gösterir; aynı hamle istakanın üstüne de çizilir: aynı renkle çevrili taşlar birlikte indirilir, numaralar sırayı verir, atılacak taş yukarı kalkar. Yaptıysan "Yaptım"a bas; başka bir şey yaptıysan alttaki seçeneklerden birine dokun ya da istakadan kendin seç.
 3. Çekme sırası sendeyken panel desteden çekmeyle yandan almayı karşılaştırır ve **destenin son taşının kime gideceğini** gösterir.
-4. Sıra rakipteyken istakanın yerine taş seçici gelir: önce desteden mi çekti yandan mı aldı, sonra attığı taş. Per indirdiyse taşlarını sırayla girersin (göstergeyle çift: göstergenin eşine ve yanındaki taşa dokun); işlediyse masada o pere dokunursun.
+4. Sıra rakipteyken istakanın yerine taş seçici gelir: önce desteden mi çekti yandan mı aldı, sonra attığı taş. Per indirdiyse taşlarını sırayla girersin (okeyi serideki yerinde gir: önce girersen alt uç, sonra girersen üst uç olur; göstergeyle çift: göstergenin eşine ve yanındaki taşa dokun); işlediyse masada o pere dokunursun.
 
 Önerinin altında beklenen puan farkı, bitirme ihtimali ve attığın taşı sağdakinin alma ihtimali yazar. Program düşündükçe sayılar netleşir; beklemek zorunda değilsin.
 

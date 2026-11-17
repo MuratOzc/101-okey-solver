@@ -425,6 +425,55 @@ pub fn classify(tiles: &[Tile], rules: &Rules) -> Option<Shape> {
     }
 }
 
+/// The run as the tiles were entered, rising or falling, so an okey entered first or last stands
+/// at that end. None when the order does not spell a run.
+fn in_tap_order(tiles: &[Tile], c: u8, rules: &Rules) -> Option<Shape> {
+    let len = tiles.len() as i32;
+    let at = |high_ace: bool| -> Vec<(i32, i32)> {
+        tiles
+            .iter()
+            .enumerate()
+            .filter(|&(_, &t)| t != JOKER)
+            .map(|(i, &t)| (i as i32, if high_ace && num(t) == 1 { 14 } else { num(t) as i32 }))
+            .collect()
+    };
+    for high_ace in [false, true] {
+        if high_ace && !rules.ace_after_king {
+            break;
+        }
+        let nat = at(high_ace);
+        if nat.len() < 2 {
+            return None;
+        }
+        for step in [1, -1] {
+            let lo = if step == 1 {
+                nat[0].1 - nat[0].0
+            } else {
+                nat[0].1 - (len - 1 - nat[0].0)
+            };
+            let hi = lo + len - 1;
+            let fits = nat.iter().all(|&(i, p)| p == if step == 1 { lo + i } else { hi - i });
+            let top = if rules.ace_after_king && lo > 1 { 14 } else { 13 };
+            if fits && lo >= 1 && hi <= top {
+                let mut jokers = 0u16;
+                for (i, &t) in tiles.iter().enumerate() {
+                    if t == JOKER {
+                        let p = if step == 1 { lo + i as i32 } else { hi - i as i32 };
+                        jokers |= 1 << p;
+                    }
+                }
+                return Some(Shape::Run {
+                    color: c,
+                    lo: lo as u8,
+                    hi: hi as u8,
+                    jokers,
+                });
+            }
+        }
+    }
+    None
+}
+
 fn run_from(tiles: &[Tile], c: u8, rules: &Rules) -> Option<Shape> {
     let len = tiles.len() as u8;
     let mut positions: Vec<u8> = tiles.iter().filter(|&&t| t != JOKER).map(|&t| num(t)).collect();
@@ -463,6 +512,9 @@ fn run_from(tiles: &[Tile], c: u8, rules: &Rules) -> Option<Shape> {
             jokers: mask,
         })
     };
+    if let Some(s) = in_tap_order(tiles, c, rules) {
+        return Some(s);
+    }
     if let Some(s) = try_layout(&positions) {
         return Some(s);
     }

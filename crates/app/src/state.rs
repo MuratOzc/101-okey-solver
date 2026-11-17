@@ -582,7 +582,13 @@ impl State {
     fn gosterge_pair(&self) -> Option<Shape> {
         let g = self.gosterge.filter(|_| self.rules.gosterge_pair)?;
         let &[a, b] = self.buffer.as_slice() else { return None };
-        let other = if a == g { b } else if b == g { a } else { return None };
+        let other = if a == g {
+            b
+        } else if b == g {
+            a
+        } else {
+            return None;
+        };
         let dealt = self.turn != 0 || self.players[0].gosterge_bonus;
         (other != JOKER && dealt).then_some(Shape::GostergePair { gosterge: g, other })
     }
@@ -1020,7 +1026,13 @@ mod tests {
         for p in ["S7 K7", "K8 K8", "M6 M6", "Si2 Si2", "S4 S4"] {
             enter_meld(&mut s, p);
         }
-        assert_eq!(s.table.melds[0].shape, Shape::GostergePair { gosterge: t("S7"), other: t("K7") });
+        assert_eq!(
+            s.table.melds[0].shape,
+            Shape::GostergePair {
+                gosterge: t("S7"),
+                other: t("K7")
+            }
+        );
         assert_eq!(s.players[1].opened, Opened::Pairs);
         assert_eq!(s.players[1].open_value, 5);
         assert!(s.opening_complete());
