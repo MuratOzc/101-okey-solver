@@ -52,6 +52,8 @@ pub struct Policy {
     pub joker_in_runs: bool,
     /// Discard: keep pairs in hand to lay onto someone's pairs later.
     pub w_pair_keep: f32,
+    /// While holding, also leave a side tile that would open the hand.
+    pub hold_side: bool,
 }
 
 impl Default for Policy {
@@ -78,6 +80,7 @@ impl Policy {
         lay_after_open: true,
         joker_in_runs: true,
         w_pair_keep: 0.0,
+        hold_side: false,
     };
 
     /// Plays for the finish, not for points: opens as soon as it can, with as few tiles left as
@@ -96,6 +99,13 @@ impl Policy {
         hold_deck_quiet: 4,
         hold_deck_active: 4,
         ..Policy::FINISHER
+    };
+
+    /// Like `HOLDER`, but does not take a side tile to open early either. Closest to the user's
+    /// table, so the opponent estimates use it; as the search's model it gained nothing.
+    pub const PATIENT: Policy = Policy {
+        hold_side: true,
+        ..Policy::HOLDER
     };
 
     pub fn varied(rng: &mut crate::rng::Rng) -> Policy {
@@ -140,5 +150,6 @@ impl Policy {
         lay_after_open: true,
         joker_in_runs: true,
         w_pair_keep: 0.0,
+        hold_side: false,
     };
 }

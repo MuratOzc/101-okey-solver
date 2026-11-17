@@ -1,7 +1,8 @@
-use crate::analysis::{Options, View};
+use crate::analysis::View;
 use crate::game::{Game, Opened, Outcome};
 use crate::meld::{Solver, hand_penalty};
 use crate::pairs::pair_stats;
+use crate::policy::Policy;
 use crate::rng::Rng;
 use crate::tile::{JOKER, Tile};
 use serde::{Deserialize, Serialize};
@@ -52,7 +53,7 @@ pub struct Now {
     pub taken: Option<Tile>,
 }
 
-/// Plays the hand out with the bots the search assumes. For seats 1–3: opened before my
+/// Plays the hand out with patient bots. For seats 1–3: opened before my
 /// next turn, opened by the end, finished before my next turn, finished.
 fn play_ahead(g: &mut Game, sv: &mut Solver, now: Now) -> [[bool; 4]; 3] {
     g.current = now.seat;
@@ -117,7 +118,7 @@ pub fn read_with(view: &View, now: Option<Now>, deals: usize, seed: u64, infer: 
     let mut rng = Rng::new(seed);
     let mut sv = Solver::new(&view.rules);
     let (meld_req, pair_req) = view.requirements();
-    let policy = Options::default().policy;
+    let policy = Policy::PATIENT;
     let mut pers = [vec![], vec![], vec![]];
     let mut pairs = [vec![], vec![], vec![]];
     let mut points = [vec![], vec![], vec![]];

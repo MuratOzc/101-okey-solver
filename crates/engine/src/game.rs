@@ -885,6 +885,9 @@ impl Game {
         if self.rules.take_penalty_enabled && pl.opened != Opened::No {
             return false;
         }
+        if pl.opened == Opened::No && self.policy[p as usize].hold_side && self.should_hold(p) {
+            return false;
+        }
         self.can_use_taken(sv, p, t)
     }
 
