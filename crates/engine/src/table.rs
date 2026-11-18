@@ -137,15 +137,15 @@ impl Table {
     pub fn discard_penalty(&self, t: Tile, opened: bool, rules: &Rules) -> i32 {
         if t == JOKER {
             rules.penalty_discard_joker
-        } else if (opened || rules.islek_applies_unopened) && self.is_islek(t, rules) {
-            rules.penalty_islek
+        } else if (opened || rules.playable_applies_unopened) && self.is_playable(t, rules) {
+            rules.penalty_playable
         } else {
             0
         }
     }
 
-    /// İşlek: a tile that fits a table meld regardless of this turn's lay-off counters.
-    pub fn is_islek(&self, t: Tile, rules: &Rules) -> bool {
+    /// Playable: a tile that fits a table meld regardless of this turn's lay-off counters.
+    pub fn is_playable(&self, t: Tile, rules: &Rules) -> bool {
         if t == JOKER {
             return false;
         }

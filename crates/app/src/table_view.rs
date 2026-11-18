@@ -98,7 +98,7 @@ pub(super) fn TableZone() -> impl IntoView {
 
 pub(super) fn setup_table(ctx: Ctx, s: &State) -> impl IntoView + use<> {
     let okey = okey_tile(s);
-    let gost = s.gosterge.map(|g| {
+    let held_indicator = s.indicator.map(|g| {
         view! {
             <div class="gost">
                 <span class="glabel">"Gösterge"</span>
@@ -117,7 +117,7 @@ pub(super) fn setup_table(ctx: Ctx, s: &State) -> impl IntoView + use<> {
             </div>
         }
     });
-    view! { <div class="setup">{gost}{hand}</div> }
+    view! { <div class="setup">{held_indicator}{hand}</div> }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -297,7 +297,7 @@ pub(super) fn tile_grid(cell: impl Fn(Tile) -> AnyView) -> AnyView {
 pub(super) fn picker_hint(s: &State) -> String {
     let who = seat_name(s, s.turn);
     match s.mode {
-        Mode::Gosterge => "Gösterge taşına dokun".into(),
+        Mode::Indicator => "Gösterge taşına dokun".into(),
         Mode::Hand => format!("Taşlarına dokun · {} / {}", s.hand.len(), s.expected_hand()),
         Mode::PickDraw => "Çektiğin taşa dokun".into(),
         Mode::MeldEntry => "Perin taşlarına sırayla dokun".into(),

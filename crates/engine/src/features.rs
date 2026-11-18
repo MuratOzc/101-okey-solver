@@ -133,7 +133,7 @@ pub fn encode(g: &Game, sv: &mut Solver, me: u8, moment: Moment, full: bool) -> 
     }
     e.flag(hand[JOKER as usize] >= 1);
     e.flag(hand[JOKER as usize] >= 2);
-    e.flag(my.gosterge_bonus);
+    e.flag(my.has_indicator);
     e.flag(moment != Moment::After);
     e.flag(matches!(moment, Moment::Take(_)));
 

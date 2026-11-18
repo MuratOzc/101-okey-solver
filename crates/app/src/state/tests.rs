@@ -56,7 +56,7 @@ fn setup_and_flow() {
 }
 
 #[test]
-fn a_side_taken_tile_must_be_used_before_the_discard() {
+fn taken_tile_must_be_used() {
     let mut s = started();
     s.discard(0, t("Si13")).unwrap();
     for d in ["K7", "M7"] {
@@ -72,7 +72,7 @@ fn a_side_taken_tile_must_be_used_before_the_discard() {
 }
 
 #[test]
-fn seven_pairs_laid_by_hand_are_rewarded_however_the_turn_ends() {
+fn seven_pairs_reward() {
     let seven = "K1 K1 M2 M2 Si3 Si3 S5 S5 K8 K8 M9 M9 Si11 Si11";
     let opened = |finishing: bool| {
         let mut s = started();
@@ -111,7 +111,7 @@ fn seven_pairs_laid_by_hand_are_rewarded_however_the_turn_ends() {
 }
 
 #[test]
-fn taking_from_the_side_is_charged_when_the_table_plays_it_so() {
+fn take_penalty_is_charged() {
     let mut s = started();
     s.rules.take_penalty_enabled = true;
     s.discard(0, t("Si13")).unwrap();
@@ -124,7 +124,7 @@ fn taking_from_the_side_is_charged_when_the_table_plays_it_so() {
 }
 
 #[test]
-fn two_okeys_are_not_entered_as_a_pair() {
+fn two_okeys_are_no_pair() {
     let mut s = started();
     s.discard(0, t("Si13")).unwrap();
     s.opp_draw().unwrap();
@@ -137,19 +137,19 @@ fn two_okeys_are_not_entered_as_a_pair() {
 }
 
 #[test]
-fn the_gosterge_cannot_be_a_tile_i_hold_twice() {
+fn indicator_not_held_twice() {
     let mut s = State::default();
     s.key(t("S7")).unwrap();
     s.set_starter(1);
     s.key(t("K1")).unwrap();
     s.key(t("K1")).unwrap();
-    s.mode = Mode::Gosterge;
+    s.mode = Mode::Indicator;
     assert!(!s.key_enabled(t("K1")));
     assert!(s.key_enabled(t("K2")));
 }
 
 #[test]
-fn usable_side_tile_can_be_taken() {
+fn usable_side_tile_taken() {
     let mut s = started();
     s.discard(0, t("Si13")).unwrap();
     for d in ["K7", "M7", "K9"] {
@@ -160,7 +160,7 @@ fn usable_side_tile_can_be_taken() {
 }
 
 #[test]
-fn opponent_lays_then_layoff_options() {
+fn opponent_layoff_options() {
     let mut s = started();
     s.discard(0, t("Si13")).unwrap();
     s.opp_draw().unwrap();
@@ -194,7 +194,7 @@ fn opponent_lays_then_layoff_options() {
 }
 
 #[test]
-fn the_gosterge_twin_pairs_with_any_tile() {
+fn indicator_pairs_with_any_tile() {
     let mut s = started();
     s.discard(0, t("Si13")).unwrap();
     s.opp_draw().unwrap();
@@ -203,8 +203,8 @@ fn the_gosterge_twin_pairs_with_any_tile() {
     }
     assert_eq!(
         s.table.melds[0].shape,
-        Shape::GostergePair {
-            gosterge: t("S7"),
+        Shape::IndicatorPair {
+            indicator: t("S7"),
             other: t("K7")
         }
     );
@@ -218,12 +218,12 @@ fn the_gosterge_twin_pairs_with_any_tile() {
     s.mode = Mode::Manual;
     s.buffer = vec![t("S7"), t("K7")];
     assert!(s.buffer_shape().is_none(), "I was not dealt the gösterge");
-    s.players[0].gosterge_bonus = true;
+    s.players[0].has_indicator = true;
     assert!(s.buffer_shape().is_some_and(|sh| sh.is_pair()));
 }
 
 #[test]
-fn nothing_touches_the_table_until_the_opening_reaches_101() {
+fn no_table_moves_before_101() {
     let mut s = started();
     s.discard(0, t("Si13")).unwrap();
     s.opp_draw().unwrap();
@@ -242,7 +242,7 @@ fn nothing_touches_the_table_until_the_opening_reaches_101() {
 }
 
 #[test]
-fn my_own_half_opening_stops_the_analysis() {
+fn half_opening_stops_analysis() {
     let mut s = started();
     s.mode = Mode::Manual;
     s.buffer = vec![t("K1"), t("K2"), t("K3")];
@@ -253,9 +253,9 @@ fn my_own_half_opening_stops_the_analysis() {
 }
 
 #[test]
-fn katlamali_opening_must_beat_the_previous_one() {
+fn raising_beats_previous_opening() {
     let mut s = started();
-    s.rules.katlamali = true;
+    s.rules.raising = true;
     s.discard(0, t("Si13")).unwrap();
     s.opp_draw().unwrap();
     enter_meld(&mut s, "K9 K10 K11");
@@ -268,7 +268,7 @@ fn katlamali_opening_must_beat_the_previous_one() {
 }
 
 #[test]
-fn match_situation_reaches_the_analysis_and_carries_to_the_next_hand() {
+fn match_stakes_carry_over() {
     let mut s = started();
     assert!(s.view().unwrap().stakes.is_none());
     s.hand_no = 10;
@@ -293,7 +293,7 @@ fn match_situation_reaches_the_analysis_and_carries_to_the_next_hand() {
 }
 
 #[test]
-fn disabled_keys_follow_what_is_possible() {
+fn disabled_keys() {
     let mut s = started();
     assert!(!s.key_enabled(t("K1")), "no keyboard input on my own action turn");
     s.discard(0, t("Si13")).unwrap();
@@ -303,7 +303,7 @@ fn disabled_keys_follow_what_is_possible() {
 }
 
 #[test]
-fn the_hand_ends_once_the_last_tile_is_drawn_and_discarded() {
+fn hand_ends_after_last_tile() {
     let mut s = started();
     s.discard(0, t("Si13")).unwrap();
     s.deck_count = 1;
@@ -313,7 +313,7 @@ fn the_hand_ends_once_the_last_tile_is_drawn_and_discarded() {
 }
 
 #[test]
-fn the_hand_is_scored_and_added_to_the_match() {
+fn hand_scored_into_match() {
     let mut s = started();
     s.discard(0, t("Si13")).unwrap();
     s.opp_draw().unwrap();
@@ -321,7 +321,7 @@ fn the_hand_is_scored_and_added_to_the_match() {
     enter_meld(&mut s, "K9 K10 K11");
     enter_meld(&mut s, "S9 S10 S11 S12 S13");
     s.finish(1, Some(JOKER));
-    s.fin_elden = false;
+    s.fin_in_one = false;
     s.players[3].opened = Opened::Melds;
     assert_eq!(s.hand_scores(), None, "nothing is scored before the leftovers are entered");
     s.left[3] = Some(40);
@@ -337,7 +337,7 @@ fn the_hand_is_scored_and_added_to_the_match() {
 }
 
 #[test]
-fn penalties_are_written_as_they_happen() {
+fn penalties_written_at_once() {
     let mut s = started();
     s.discard(0, t("Si13")).unwrap();
     s.opp_draw().unwrap();
@@ -352,7 +352,7 @@ fn penalties_are_written_as_they_happen() {
 }
 
 #[test]
-fn an_opponent_finishes_by_discarding_the_last_tile() {
+fn opponent_finishes_on_last_tile() {
     let mut s = started();
     s.discard(0, t("Si13")).unwrap();
     s.opp_draw().unwrap();
@@ -369,7 +369,7 @@ fn an_opponent_finishes_by_discarding_the_last_tile() {
 }
 
 #[test]
-fn going_out_in_the_turn_of_the_opening_is_elden_without_ticking_it() {
+fn in_one_marked_automatically() {
     let mut s = started();
     s.discard(0, t("Si13")).unwrap();
     s.opp_draw().unwrap();
@@ -377,7 +377,7 @@ fn going_out_in_the_turn_of_the_opening_is_elden_without_ticking_it() {
     s.players[1].hand_len = Some(1);
     s.key(t("K7")).unwrap();
     assert_eq!(
-        (s.stage, s.finisher, s.fin_elden),
+        (s.stage, s.finisher, s.fin_in_one),
         (Stage::Over, Some(1), true),
         "21 points and out: elden needs no 101"
     );
@@ -391,7 +391,7 @@ fn going_out_in_the_turn_of_the_opening_is_elden_without_ticking_it() {
     }
     assert!(!s.opening_complete() && s.may_discard(), "36 points, but the last tile may go");
     s.discard(0, t("S4")).unwrap();
-    assert_eq!((s.stage, s.finisher, s.fin_elden), (Stage::Over, Some(0), true));
+    assert_eq!((s.stage, s.finisher, s.fin_in_one), (Stage::Over, Some(0), true));
 
     let mut s = started();
     s.discard(0, t("Si13")).unwrap();
@@ -404,13 +404,13 @@ fn going_out_in_the_turn_of_the_opening_is_elden_without_ticking_it() {
     s.players[1].hand_len = Some(1);
     s.key(t("K7")).unwrap();
     assert_eq!(
-        (s.stage, s.fin_elden),
+        (s.stage, s.fin_in_one),
         (Stage::Over, false),
         "opening and then laying off is a plain finish"
     );
 
     let mut s = started();
-    s.rules.elden_requires_open_min = true;
+    s.rules.in_one_requires_open_min = true;
     s.hand = "K1 K2 K3 S4".split_whitespace().map(t).collect();
     s.mode = Mode::Manual;
     s.buffer = vec![t("K1"), t("K2"), t("K3")];
@@ -434,7 +434,7 @@ fn apply_decision_discards() {
 }
 
 #[test]
-fn meld_totals_in_thirds_with_the_rest_as_yan() {
+fn totals_in_thirds() {
     assert_eq!(count(101, false), "101");
     assert_eq!(count(101, true), "33 yan 2");
     assert_eq!(count(102, true), "34");

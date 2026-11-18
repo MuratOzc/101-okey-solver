@@ -41,7 +41,7 @@ impl Game {
         if !self.rules.pairs_enabled || pl.opened != Opened::No {
             return false;
         }
-        if (pair_stats(&pl.hand, &self.rules, self.gosterge_for(p)).0 as i32) < self.pair_req as i32 - 1 {
+        if (pair_stats(&pl.hand, &self.rules, self.indicator_for(p)).0 as i32) < self.pair_req as i32 - 1 {
             return false;
         }
         let v = self.open_search(sv, &pl.hand, None).map_or(0, |pl| pl.open_value(&self.rules));
@@ -179,7 +179,7 @@ impl Game {
         };
         let hold = taken.is_none() && opened == Opened::No && self.should_hold(p);
         for &c in tries {
-            if c == OpenChoice::Finish && !self.elden_possible(sv, p, taken) {
+            if c == OpenChoice::Finish && !self.in_one_possible(sv, p, taken) {
                 continue;
             }
             if hold && matches!(c, OpenChoice::OpenMelds(..) | OpenChoice::OpenPairs(..)) {

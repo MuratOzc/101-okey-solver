@@ -159,8 +159,8 @@ pub(super) fn HandInfo() -> impl IntoView {
     move || {
         let okey = okey_tile(&st.get());
         ctx.hand.get().map(|r: HandReport| {
-            let (opened, yan) = st.with(|s| (s.players[0].opened, s.yan));
-            let total = move |v: i32| state::count(v, yan);
+            let (opened, thirds) = st.with(|s| (s.players[0].opened, s.thirds));
+            let total = move |v: i32| state::count(v, thirds);
             let head = match opened {
                 Opened::No => format!("Perle açış: {} / {} · Çift: {} / {}", total(r.open_value), total(r.meld_req), r.pairs, r.pair_req),
                 Opened::Melds => "Perle açtın.".to_string(),
@@ -213,9 +213,14 @@ pub(super) fn read_lines(r: &Read, s: &State) -> Vec<String> {
     match r.opened {
         Opened::No => {
             let hand = if s.rules.pairs_enabled {
-                format!("açılışı {}–{} · {}", s.total(r.per[0]), s.total(r.per[2]), pairs_text(&r.pairs))
+                format!(
+                    "açılışı {}–{} · {}",
+                    s.total(r.opening[0]),
+                    s.total(r.opening[2]),
+                    pairs_text(&r.pairs)
+                )
             } else {
-                format!("açılışı {}–{}", s.total(r.per[0]), s.total(r.per[2]))
+                format!("açılışı {}–{}", s.total(r.opening[0]), s.total(r.opening[2]))
             };
             if no_turn_left(s, r.seat) {
                 return vec![hand, "sırası gelmeyecek, açamaz".to_string()];
@@ -256,8 +261,8 @@ pub(super) fn okey_share(r: &Read) -> String {
 }
 
 /// Bands of the best opening total: 10 points, or 3 whole pers (9 points) when totals are said in thirds.
-pub(super) fn per_bands(dist: &[f32], yan: bool) -> Vec<(i32, i32, f32)> {
-    let width = if yan { 9 } else { 10 };
+pub(super) fn opening_bands(dist: &[f32], thirds: bool) -> Vec<(i32, i32, f32)> {
+    let width = if thirds { 9 } else { 10 };
     let mut out: Vec<(i32, i32, f32)> = Vec::new();
     for (v, &x) in dist.iter().enumerate() {
         let lo = v as i32 / width * width;
@@ -269,8 +274,8 @@ pub(super) fn per_bands(dist: &[f32], yan: bool) -> Vec<(i32, i32, f32)> {
     out
 }
 
-pub(super) fn band_label(lo: i32, hi: i32, yan: bool) -> String {
-    if yan {
+pub(super) fn band_label(lo: i32, hi: i32, thirds: bool) -> String {
+    if thirds {
         format!("{}–{}", lo / 3, hi / 3)
     } else {
         format!("{lo}–{hi}")
@@ -290,14 +295,14 @@ pub(super) fn Reads() -> impl IntoView {
             .map(|r| {
                 let detail = match r.opened {
                     Opened::No => {
-                        let bands = per_bands(&r.per_dist, s.yan)
+                        let bands = opening_bands(&r.opening_dist, s.thirds)
                             .into_iter()
                             .filter(|&(_, _, x)| x >= 0.03)
                             .map(|(lo, hi, x)| {
                                 let reach = hi >= r.meld_req;
                                 view! {
                                     <div class="rbar" class:reach=reach>
-                                        <span>{band_label(lo, hi, s.yan)}</span>
+                                        <span>{band_label(lo, hi, s.thirds)}</span>
                                         <span class="bt"><span class="bf" style=format!("width:{:.0}%", x * 100.0)></span></span>
                                         <span class="bp">{share(x)}</span>
                                     </div>
@@ -334,7 +339,7 @@ pub(super) fn Reads() -> impl IntoView {
                         let finish = finish_odds(&r);
                         view! {
                             <div class="muted">
-                                {format!("En büyük açılışı: yaklaşık {} (çoğunlukla {}–{})", s.total(r.per[1]), s.total(r.per[0]), s.total(r.per[2]))}
+                                {format!("En büyük açılışı: yaklaşık {} (çoğunlukla {}–{})", s.total(r.opening[1]), s.total(r.opening[0]), s.total(r.opening[2]))}
                             </div>
                             <div class="rbars">{bands}</div>
                             {pairs}

@@ -24,9 +24,9 @@ pub const fn num(t: Tile) -> u8 {
     t % 13 + 1
 }
 
-pub fn okey_of(gosterge: Tile) -> Tile {
-    let n = num(gosterge);
-    id(color(gosterge), if n == 13 { 1 } else { n + 1 })
+pub fn okey_of(indicator: Tile) -> Tile {
+    let n = num(indicator);
+    id(color(indicator), if n == 13 { 1 } else { n + 1 })
 }
 
 pub fn full_set() -> Counts {

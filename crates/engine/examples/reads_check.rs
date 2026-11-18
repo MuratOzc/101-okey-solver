@@ -65,7 +65,7 @@ fn main() {
             b.truth += truth;
             b.pred += r.p_either as f64;
             b.brier += (r.p_either as f64 - truth).powi(2);
-            b.inside += (r.per[0] <= v && v <= r.per[2]) as i32 as f64;
+            b.inside += (r.opening[0] <= v && v <= r.opening[2]) as i32 as f64;
         }
     }
     for (name, b) in ["deck > 8", "deck <= 8"].iter().zip(&buckets) {

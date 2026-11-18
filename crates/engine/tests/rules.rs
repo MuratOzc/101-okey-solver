@@ -22,11 +22,11 @@ fn game_with(rules: Rules, hands: [&str; 4]) -> Game {
     let mut seen = [0; NIDS];
     seen[t("S7") as usize] = 1;
     Game {
-        gosterge: t("S7"),
+        indicator: t("S7"),
         players: hands.map(|h| Player {
             hand: hand(h),
             opened: Opened::No,
-            gosterge_bonus: false,
+            has_indicator: false,
             penalty: 0,
         }),
         deck: vec![],
@@ -82,7 +82,7 @@ const OPEN_100: &str = "K9 K10 K11 K12 K13 M11 M12 M13 S2 S3 S4";
 // ---------- opening ----------
 
 #[test]
-fn opening_with_melds_needs_at_least_101() {
+fn melds_open_at_101() {
     let mut g = game([&format!("{OPEN_100} Si8"), "", "", ""]);
     assert!(!g.try_open_melds(&mut sv(&g), 0, None), "100 points must not open");
     assert_eq!(g.players[0].opened, Opened::No);
@@ -94,7 +94,7 @@ fn opening_with_melds_needs_at_least_101() {
 }
 
 #[test]
-fn opening_with_pairs_needs_five_pairs() {
+fn pairs_open_at_five() {
     let mut g = game(["K1 K1 M2 M2 S3 S3 Si4 Si4 K6 M9", "", "", ""]);
     assert!(!g.try_open_pairs(0, None), "four pairs must not open");
     let mut g = game(["K1 K1 M2 M2 S3 S3 Si4 Si4 K6 K6 M9", "", "", ""]);
@@ -103,7 +103,7 @@ fn opening_with_pairs_needs_five_pairs() {
 }
 
 #[test]
-fn okey_with_a_single_is_a_pair_but_two_okeys_are_not() {
+fn okey_pairs_but_two_okeys_dont() {
     let mut g = game(["K1 K1 M2 M2 S3 S3 Si4 Si4 K6 OK M9", "", "", ""]);
     assert!(g.try_open_pairs(0, None), "okey + K6 is the fifth pair");
     let mut g = game(["K1 K1 M2 M2 S3 S3 Si4 Si4 OK OK", "", "", ""]);
@@ -111,19 +111,19 @@ fn okey_with_a_single_is_a_pair_but_two_okeys_are_not() {
 }
 
 #[test]
-fn gosterge_dealt_to_you_pairs_with_any_tile() {
+fn dealt_indicator_pairs_with_any() {
     let h = "K1 K1 M2 M2 S3 S3 Si4 Si4 S7 K11 M9";
     let mut g = game([h, "", "", ""]);
     assert!(!g.try_open_pairs(0, None), "without the gösterge right it is only four pairs");
     let mut g = game([h, "", "", ""]);
-    g.players[0].gosterge_bonus = true;
+    g.players[0].has_indicator = true;
     assert!(g.try_open_pairs(0, None), "gösterge (S7) + K11 counts as the fifth pair");
 }
 
 #[test]
-fn katlamali_raises_each_threshold_separately() {
+fn raising_thresholds_are_separate() {
     let rules = Rules {
-        katlamali: true,
+        raising: true,
         ..Rules::default()
     };
     let mut g = game_with(
@@ -145,7 +145,7 @@ fn katlamali_raises_each_threshold_separately() {
 }
 
 #[test]
-fn katlamasiz_keeps_thresholds_fixed() {
+fn fixed_thresholds_without_raising() {
     let mut g = game([&format!("{OPEN_101} Si8"), "S9 S10 S11 S12 S13 Si10 Si11 Si12 Si13 K1", "", ""]);
     assert!(g.try_open_melds(&mut sv(&g), 0, None));
     assert_eq!(g.meld_req, 101);
@@ -155,7 +155,7 @@ fn katlamasiz_keeps_thresholds_fixed() {
 // ---------- nothing on the table before opening ----------
 
 #[test]
-fn unopened_player_cannot_lay_off_or_take_okey() {
+fn unopened_cannot_touch_table() {
     let mut g = game(["M4 M8 K1 K2 K3 Si9", "", "", ""]);
     put_shape(
         &mut g,
@@ -176,15 +176,15 @@ fn unopened_player_cannot_lay_off_or_take_okey() {
         );
     }
     assert_eq!(g.table.melds[0].shape, before.table.melds[0].shape);
-    assert!(!g.elden_possible(&mut sv(&g), 0, None));
+    assert!(!g.in_one_possible(&mut sv(&g), 0, None));
 }
 
 #[test]
-fn laying_off_the_whole_hand_is_not_an_opening() {
+fn laying_off_is_not_opening() {
     // K1-K2-K3 is only 6 points: M8 may not go onto the table run just because the hand would empty.
     let mut g = game(["M8 K1 K2 K3 Si9", "", "", ""]);
     put(&mut g, 1, "M5 M6 M7");
-    assert!(!g.elden_possible(&mut sv(&g), 0, None));
+    assert!(!g.in_one_possible(&mut sv(&g), 0, None));
     assert!(g.clone().apply_choice(&mut sv(&g), 0, OpenChoice::Finish, None).is_err());
 }
 
@@ -213,10 +213,10 @@ fn steps_respect_opening(view: &View, seed: u64) {
 }
 
 #[test]
-fn no_recommendation_touches_the_table_before_opening() {
-    for katlamali in [false, true] {
+fn advice_waits_for_opening() {
+    for raising in [false, true] {
         let rules = Rules {
-            katlamali,
+            raising,
             ..Rules::default()
         };
         let mut solver = Solver::new(&rules);
@@ -245,47 +245,47 @@ fn no_recommendation_touches_the_table_before_opening() {
     }
 }
 
-// ---------- elden bitme ----------
+// ---------- in-one bitme ----------
 
 const ALL_MELDS: &str = "K1 K2 K3 M1 M2 M3 S1 S2 S3 Si1 Si2 Si3 K5 M5 S5 K7 M7 Si7 K9 M9 S9";
 
 #[test]
-fn elden_needs_no_101_but_only_own_melds() {
+fn in_one_needs_only_own_melds() {
     let mut g = game([&format!("{ALL_MELDS} Si13"), "K5", "K5", "K5"]);
     let out = g.apply_choice(&mut sv(&g), 0, OpenChoice::Finish, None).unwrap().unwrap();
     let Outcome::Finished(f) = out else { panic!("should finish") };
-    assert!(f.elden && !f.okey && !f.pairs);
+    assert!(f.in_one && !f.okey && !f.pairs);
     assert_eq!(f.last, t("Si13"));
     assert_eq!(g.scores(&out), [-202, 202, 202, 202], "elden doubles everything");
 }
 
 #[test]
-fn opening_then_laying_off_to_finish_is_a_normal_finish() {
+fn open_and_lay_off_is_normal_finish() {
     let mut g = game([&format!("{OPEN_101} M8 Si2"), "K5", "", ""]);
     put(&mut g, 1, "M5 M6 M7");
-    assert!(!g.elden_possible(&mut sv(&g), 0, None));
+    assert!(!g.in_one_possible(&mut sv(&g), 0, None));
     let out = g.apply_choice(&mut sv(&g), 0, OpenChoice::OPEN, None).unwrap().unwrap();
     let Outcome::Finished(f) = out else { panic!("should finish") };
-    assert!(!f.elden, "opening and finishing by laying off is not elden");
+    assert!(!f.in_one, "opening and finishing by laying off is not elden");
     assert_eq!(g.scores(&out)[0], -101);
 }
 
 #[test]
-fn finishing_by_discarding_okey_doubles() {
+fn okey_finish_doubles() {
     let mut g = game([&format!("{ALL_MELDS} OK"), "K5", "", ""]);
     let out = g.apply_choice(&mut sv(&g), 0, OpenChoice::Finish, None).unwrap().unwrap();
     let Outcome::Finished(f) = out else { panic!("should finish") };
-    assert!(f.okey && f.elden);
+    assert!(f.okey && f.in_one);
     assert_eq!(g.scores(&out)[..2], [-404, 404], "okey × elden multiply to four");
 }
 
 // ---------- scoring ----------
 
-fn finished(player: u8, okey: bool, elden: bool, pairs: bool) -> Outcome {
+fn finished(player: u8, okey: bool, in_one: bool, pairs: bool) -> Outcome {
     Outcome::Finished(FinishInfo {
         player,
         okey,
-        elden,
+        in_one,
         pairs,
         last: 0,
     })
@@ -311,7 +311,7 @@ fn end_of_hand_scores() {
 }
 
 #[test]
-fn okey_left_in_hand_costs_101_each() {
+fn okey_in_hand_costs_101() {
     let mut g = game(["", "K5 OK", "K5 OK", ""]);
     g.players[2].opened = Opened::Melds;
     let s = g.scores(&finished(0, false, false, false));
@@ -320,21 +320,21 @@ fn okey_left_in_hand_costs_101_each() {
 }
 
 #[test]
-fn in_hand_penalties_are_not_multiplied() {
+fn penalties_not_multiplied() {
     let mut g = game(["", "K5", "", ""]);
     g.players[1].penalty = 101;
     assert_eq!(g.scores(&finished(0, true, false, false))[1], 202 + 101);
 }
 
 #[test]
-fn deck_out_counts_normally_with_no_finisher() {
+fn deck_out_scores() {
     let mut g = game(["K5 M9", "K5", "", ""]);
     g.players[0].opened = Opened::Melds;
     assert_eq!(g.scores(&Outcome::DeckOut)[..2], [14, 101]);
 }
 
 #[test]
-fn partner_finishing_gives_the_team_minus_202() {
+fn partner_finish_minus_202() {
     let rules = Rules {
         partners: true,
         ..Rules::default()
@@ -360,7 +360,7 @@ fn discard_penalties() {
 }
 
 #[test]
-fn islek_stays_islek_after_this_turns_two_layoffs() {
+fn playable_after_two_layoffs() {
     let mut g = game(["M11 K1", "", "", ""]);
     let i = put(&mut g, 1, "M6 M7 M8");
     assert!(g.table.lay_off_on(i, t("M9"), None, &g.rules.clone()).is_some());
@@ -371,7 +371,7 @@ fn islek_stays_islek_after_this_turns_two_layoffs() {
 // ---------- taking the side tile ----------
 
 #[test]
-fn side_tile_only_if_it_is_used_this_turn() {
+fn side_tile_only_if_used() {
     let mut g = game([&format!("{OPEN_100} K1"), "", "", ""]);
     set_top(&mut g, "Si8");
     assert!(!g.can_use_taken(&mut sv(&g), 0, t("Si8")), "cannot open with it, so cannot take it");
@@ -391,14 +391,14 @@ fn side_tile_only_if_it_is_used_this_turn() {
 }
 
 #[test]
-fn taking_must_open_with_that_tile_not_just_open() {
+fn taken_tile_must_be_in_opening() {
     // The hand already opens without S2; S2 itself fits nothing, so it may not be taken.
     let g = game([&format!("{OPEN_101} Si8"), "", "", ""]);
     assert!(!g.can_use_taken(&mut sv(&g), 0, t("S2")));
 }
 
 #[test]
-fn optional_side_take_penalty_is_ten_times_the_tile() {
+fn take_penalty_ten_times() {
     let rules = Rules {
         take_penalty_enabled: true,
         ..Rules::default()
@@ -415,7 +415,7 @@ fn optional_side_take_penalty_is_ten_times_the_tile() {
 }
 
 #[test]
-fn taking_an_okey_from_the_side_costs_nothing() {
+fn taken_okey_costs_nothing() {
     let rules = Rules {
         take_penalty_enabled: true,
         ..Rules::default()
@@ -429,7 +429,7 @@ fn taking_an_okey_from_the_side_costs_nothing() {
 // ---------- after opening ----------
 
 #[test]
-fn pair_opener_adds_pairs_and_lays_off_but_never_lays_runs() {
+fn pair_opener_limits() {
     let mut g = game(["K1 K1 M2 M2 S3 S3 Si4 Si4 K6 K6 M7 M8 M9 S11 Si12", "", "", ""]);
     put(&mut g, 1, "M4 M5 M6");
     let out = g.apply_choice(&mut sv(&g), 0, OpenChoice::PAIRS, None).unwrap();
@@ -452,7 +452,7 @@ fn pair_opener_adds_pairs_and_lays_off_but_never_lays_runs() {
 }
 
 #[test]
-fn at_most_three_pairs_per_turn_into_a_pair_area() {
+fn three_pairs_per_turn() {
     let mut g = game(["K1 K1 M2 M2 S3 S3 Si4 Si4 K9", "", "", ""]);
     put(&mut g, 0, "K13 K13");
     assert!(g.lay(&mut sv(&g), 0, None, false).unwrap().is_none());
@@ -466,7 +466,7 @@ fn at_most_three_pairs_per_turn_into_a_pair_area() {
 }
 
 #[test]
-fn meld_opener_gives_pairs_to_pair_openers_three_each() {
+fn meld_opener_gives_pairs() {
     let mut g = game(["K1 K1 M2 M2 S3 S3 Si4 Si4 K6 K6 M9 M9 S11 S11 K9", "", "", ""]);
     g.players[0].opened = Opened::Melds;
     put(&mut g, 1, "K13 K13");
@@ -477,7 +477,7 @@ fn meld_opener_gives_pairs_to_pair_openers_three_each() {
 }
 
 #[test]
-fn meld_opener_cannot_open_pairs_and_no_pair_area_means_no_pairs() {
+fn meld_opener_has_no_pairs() {
     let mut g = game(["K1 K1 M2 M2 S3 S3 Si4 Si4 K6 K6 K9", "", "", ""]);
     g.players[0].opened = Opened::Melds;
     assert!(g.clone().apply_choice(&mut sv(&g), 0, OpenChoice::PAIRS, None).is_err());
@@ -486,7 +486,7 @@ fn meld_opener_cannot_open_pairs_and_no_pair_area_means_no_pairs() {
 }
 
 #[test]
-fn new_runs_are_three_to_five_long() {
+fn new_runs_three_to_five() {
     let mut g = game(["M1 M2 M3 M4 M5 M6 M7 K9", "", "", ""]);
     g.players[0].opened = Opened::Melds;
     let _ = g.lay(&mut sv(&g), 0, None, false);
@@ -499,7 +499,7 @@ fn new_runs_are_three_to_five_long() {
 }
 
 #[test]
-fn a_tile_is_kept_back_to_discard() {
+fn tile_kept_to_discard() {
     let mut g = game(["M8 M9", "", "", ""]);
     g.players[0].opened = Opened::Melds;
     put(&mut g, 1, "M5 M6 M7");
@@ -515,7 +515,7 @@ fn a_tile_is_kept_back_to_discard() {
 // ---------- okey on the table ----------
 
 #[test]
-fn losing_okey_to_an_opponent_costs_the_owner_101() {
+fn losing_okey_costs_101() {
     let mut g = game(["M4 K1 S9 Si3", "", "", ""]);
     g.players[0].opened = Opened::Melds;
     put_shape(
@@ -553,7 +553,7 @@ fn losing_okey_to_an_opponent_costs_the_owner_101() {
 }
 
 #[test]
-fn opened_players_take_an_exposed_okey_when_they_hold_the_tile() {
+fn opened_take_exposed_okey() {
     let mut g = game(["M4 K1 S9 Si3", "", "", ""]);
     g.players[0].opened = Opened::Melds;
     put_shape(
@@ -575,7 +575,7 @@ fn opened_players_take_an_exposed_okey_when_they_hold_the_tile() {
 }
 
 #[test]
-fn partner_okey_is_free_in_partner_mode() {
+fn partner_okey_is_free() {
     let rules = Rules {
         partners: true,
         ..Rules::default()
@@ -598,7 +598,7 @@ fn partner_okey_is_free_in_partner_mode() {
 }
 
 #[test]
-fn group_okey_needs_the_group_completed() {
+fn group_okey_needs_full_group() {
     let r = Rules::default();
     let three = Table {
         melds: vec![TableMeld::new(1, classify(&[t("S8"), t("M8"), JOKER], &r).unwrap())],
@@ -621,7 +621,7 @@ fn group_okey_needs_the_group_completed() {
 // ---------- tiles ----------
 
 #[test]
-fn one_is_only_low_and_groups_need_distinct_colors() {
+fn one_low_and_distinct_colors() {
     let r = Rules::default();
     assert!(classify(&[t("K12"), t("K13"), t("K1")], &r).is_none(), "12-13-1 is not a run");
     assert!(classify(&[JOKER, JOKER], &r).is_none(), "two okeys are not a pair");
@@ -635,7 +635,7 @@ fn one_is_only_low_and_groups_need_distinct_colors() {
 }
 
 #[test]
-fn okey_is_the_tile_after_the_gosterge_and_scores_as_what_it_replaces() {
+fn okey_follows_indicator() {
     assert_eq!(okey_of(t("S7")), t("S8"));
     assert_eq!(okey_of(t("K13")), t("K1"));
     let r = Rules::default();
@@ -644,7 +644,7 @@ fn okey_is_the_tile_after_the_gosterge_and_scores_as_what_it_replaces() {
 }
 
 #[test]
-fn starter_gets_22_and_twenty_tiles_stay_in_the_deck() {
+fn starter_gets_22() {
     let rules = Rules::default();
     let g = Game::deal(&rules, &mut Rng::new(5), 2);
     assert_eq!(total(&g.players[2].hand), 22);
@@ -653,7 +653,7 @@ fn starter_gets_22_and_twenty_tiles_stay_in_the_deck() {
 }
 
 #[test]
-fn okey_can_be_kept_out_of_runs() {
+fn okey_kept_out_of_runs() {
     let r = Rules::default();
     let mut tb = Table::default();
     tb.melds
@@ -670,7 +670,7 @@ fn okey_can_be_kept_out_of_runs() {
 }
 
 #[test]
-fn safe_opening_never_puts_okey_in_a_run() {
+fn safe_opening_keeps_okey_out() {
     let mut g = game(["K10 K11 OK K13 M10 M11 M12 M13 S9 S10 S11 Si2", "", "", ""]);
     let ok = g.try_open_melds_style(&mut sv(&g), 0, None, okey_engine::policy::OpenStyle::SafeOkey);
     if ok {
@@ -715,10 +715,10 @@ fn mid_game_positions(rules: &Rules, seeds: std::ops::Range<u64>, mut check: imp
 }
 
 #[test]
-fn every_generated_move_is_legal_and_opens_before_touching_the_table() {
-    for katlamali in [false, true] {
+fn generated_moves_are_legal() {
+    for raising in [false, true] {
         let rules = Rules {
-            katlamali,
+            raising,
             ..Rules::default()
         };
         let checked = mid_game_positions(&rules, 0..250, |g, seed| {
@@ -766,7 +766,7 @@ fn layoff_tiles(acts: &[Act]) -> Vec<Tile> {
 }
 
 #[test]
-fn generator_finds_exactly_the_layoff_options() {
+fn generator_finds_layoffs() {
     let mut g = game(["M8 M9 K1", "", "", ""]);
     g.players[0].opened = Opened::Melds;
     put(&mut g, 1, "M5 M6 M7");
@@ -780,7 +780,7 @@ fn generator_finds_exactly_the_layoff_options() {
 }
 
 #[test]
-fn generator_offers_every_place_for_the_okey() {
+fn generator_places_okey_everywhere() {
     let mut g = game(["K5 M5 OK Si9 S2", "", "", ""]);
     g.players[0].opened = Opened::Melds;
     put(&mut g, 1, "M6 M7 M8");
@@ -820,7 +820,7 @@ fn generator_offers_every_place_for_the_okey() {
 }
 
 #[test]
-fn generator_lists_openings_with_and_without_the_extra_meld() {
+fn generator_optional_extra_meld() {
     // 101 exactly from two melds, plus a spare S2-S3-S4 that may be laid or kept.
     let g = game([&format!("{OPEN_101} S2 S3 S4 Si9"), "", "", ""]);
     let positions = generate(&g, 0, None, 5000).positions;
@@ -832,7 +832,7 @@ fn generator_lists_openings_with_and_without_the_extra_meld() {
 }
 
 #[test]
-fn exhaustive_analyzer_reports_explicit_moves() {
+fn analyzer_reports_moves() {
     let g = game([&format!("{OPEN_101} S2 S3 S4 Si9"), "", "", ""]);
     let mut view = public_view(&g, Phase::AfterDraw, None);
     view.deck_count = 10;
@@ -853,7 +853,7 @@ fn exhaustive_analyzer_reports_explicit_moves() {
 }
 
 #[test]
-fn generator_builds_runs_that_end_on_a_1_after_13() {
+fn generator_runs_12_13_1() {
     let rules = Rules {
         one_after_thirteen: true,
         ..Rules::default()
@@ -882,9 +882,9 @@ fn generator_builds_runs_that_end_on_a_1_after_13() {
 }
 
 #[test]
-fn a_seat_reading_the_table_sees_the_raised_thresholds() {
+fn public_view_keeps_thresholds() {
     let rules = Rules {
-        katlamali: true,
+        raising: true,
         ..Rules::default()
     };
     let mut g = game_with(
@@ -906,7 +906,7 @@ fn a_seat_reading_the_table_sees_the_raised_thresholds() {
 }
 
 #[test]
-fn my_finishing_chance_does_not_count_my_partner() {
+fn finish_chance_excludes_partner() {
     let rules = Rules {
         partners: true,
         ..Rules::default()
@@ -932,7 +932,7 @@ fn my_finishing_chance_does_not_count_my_partner() {
 use okey_engine::stakes::Stakes;
 
 #[test]
-fn last_hand_is_won_or_lost_on_the_spot() {
+fn last_hand_decides_match() {
     let close = Stakes {
         hands_left: 0,
         behind: [100, 100, 100],
@@ -952,7 +952,7 @@ fn last_hand_is_won_or_lost_on_the_spot() {
 }
 
 #[test]
-fn earlier_hands_leave_room_for_what_is_still_to_come() {
+fn earlier_hands_leave_room() {
     let level = Stakes {
         hands_left: 5,
         behind: [0, 0, 0],
@@ -981,7 +981,7 @@ fn earlier_hands_leave_room_for_what_is_still_to_come() {
 }
 
 /// 18 tiles are my own melds; S9-S10 and M5 fit the table, and I hold an okey.
-/// I can finish right now (elden with the okey inside a run, or open and lay off), or keep waiting.
+/// I can finish right now (in-one with the okey inside a run, or open and lay off), or keep waiting.
 fn finish_or_wait(stakes: Option<Stakes>) -> View {
     let rules = Rules::default();
     let meld = |owner: u8, s: &str| TableMeld::new(owner, classify(&s.split_whitespace().map(t).collect::<Vec<_>>(), &rules).unwrap());
@@ -1001,7 +1001,7 @@ fn finish_or_wait(stakes: Option<Stakes>) -> View {
             meld(3, "Si9 Si10 Si11 Si12"),
             meld(3, "K1 K2 K3"),
         ],
-        gosterge: t("M8"),
+        indicator: t("M8"),
         hand: "K9 K10 K11 K12 K13 M10 M11 M12 M13 S1 S2 S3 Si5 Si6 Si7 K4 M4 Si4 S9 S10 M5 OK"
             .split_whitespace()
             .map(t)
@@ -1025,7 +1025,7 @@ fn ends_the_hand(view: &View, c: &CandReport) -> bool {
 }
 
 #[test]
-fn without_match_stakes_the_sure_finish_is_taken() {
+fn sure_finish_without_stakes() {
     let view = finish_or_wait(None);
     let mut a = Analyzer::new(view.clone(), 3).unwrap();
     a.step(300);
@@ -1035,7 +1035,7 @@ fn without_match_stakes_the_sure_finish_is_taken() {
 }
 
 #[test]
-fn far_ahead_in_the_last_hand_the_sure_finish_is_taken() {
+fn sure_finish_when_far_ahead() {
     let view = finish_or_wait(Some(Stakes {
         hands_left: 0,
         behind: [-400, -400, -400],
@@ -1048,9 +1048,9 @@ fn far_ahead_in_the_last_hand_the_sure_finish_is_taken() {
 }
 
 #[test]
-fn far_behind_in_the_last_hand_a_finish_that_cannot_win_is_refused() {
-    // 500 behind everyone: finishing now (at best elden, doubled) still loses the match.
-    // Only an elden finish that also throws the okey, four-fold, can turn it around, so the hand must go on.
+fn hopeless_finish_refused() {
+    // 500 behind everyone: finishing now (at best in-one, doubled) still loses the match.
+    // Only an in-one finish that also throws the okey, four-fold, can turn it around, so the hand must go on.
     let view = finish_or_wait(Some(Stakes {
         hands_left: 0,
         behind: [500, 500, 500],
@@ -1072,7 +1072,7 @@ fn far_behind_in_the_last_hand_a_finish_that_cannot_win_is_refused() {
 }
 
 #[test]
-fn the_analysis_tells_who_draws_the_last_tile() {
+fn who_draws_last_tile() {
     let rules = Rules::default();
     let mut g = Game::deal(&rules, &mut Rng::new(5), 0);
     g.deck.truncate(2);
@@ -1083,7 +1083,7 @@ fn the_analysis_tells_who_draws_the_last_tile() {
 
     let view = View {
         rules: rules.clone(),
-        gosterge: t("S7"),
+        indicator: t("S7"),
         hand: "K1 K2 K3 K4 K5 M9 M10 M11 S1 S1 Si4 Si5 Si6 K12 M12 S12 Si12 M3 M4 S9 Si13"
             .split_whitespace()
             .map(t)
@@ -1120,7 +1120,7 @@ fn the_analysis_tells_who_draws_the_last_tile() {
 }
 
 #[test]
-fn opening_with_seven_pairs_writes_minus_101_to_the_opener() {
+fn seven_pairs_minus_101() {
     use okey_engine::moves::Act;
     let pairs = |n: usize| -> Vec<Act> {
         ["K1", "K3", "K5", "S2", "S4", "M6", "M8"][..n]
@@ -1143,7 +1143,7 @@ fn opening_with_seven_pairs_writes_minus_101_to_the_opener() {
 }
 
 #[test]
-fn a_run_laid_this_turn_cannot_grow_past_five_in_the_same_turn() {
+fn fresh_run_stops_at_five() {
     use okey_engine::moves::Act;
     let run = |color, lo, hi| Act::Meld(Shape::Run { color, lo, hi, jokers: 0 });
     let lay = |meld, tile: &str, side| Act::Layoff { meld, tile: t(tile), side };
@@ -1170,7 +1170,7 @@ fn a_run_laid_this_turn_cannot_grow_past_five_in_the_same_turn() {
 }
 
 #[test]
-fn generator_opens_with_a_run_starting_right_after_a_group() {
+fn generator_run_after_group() {
     let g = game(["K1 S1 M1 K2 K3 K4 S7 S8 S9 M9 M10 M11 K12 M12 Si12 Si3 Si3", "", "", ""]);
     let positions = generate(&g, 0, Some(t("S1")), 5000).positions;
     let has = |acts: &Vec<Act>, want: &dyn Fn(&Shape) -> bool| acts.iter().any(|a| matches!(a, Act::Meld(s) if want(s)));
@@ -1194,7 +1194,7 @@ fn generator_opens_with_a_run_starting_right_after_a_group() {
 }
 
 #[test]
-fn generator_lays_tiles_directly_instead_of_through_an_okey_swap() {
+fn generator_prefers_direct_layoff() {
     let g = game(["K13 S13 Si13 S12 M12 Si12 Si8 Si9 Si10 OK OK K2 K5", "", "", ""]);
     let positions = generate(&g, 0, None, 5000).positions;
     let plain = |acts: &&Vec<Act>| acts.len() == 3 && acts.iter().all(|a| matches!(a, Act::Meld(s) if s.jokers() == 0));
@@ -1210,7 +1210,7 @@ fn generator_lays_tiles_directly_instead_of_through_an_okey_swap() {
 }
 
 #[test]
-fn an_okey_is_paid_for_by_whoever_laid_it_not_by_the_owner_of_the_meld() {
+fn okey_layer_pays() {
     let lay = |p: u8| {
         let mut g = game(["K13 OK Si3 Si5", "K13 Si3", "Si3 Si4", "Si3 Si4"]);
         for q in 0..4 {
@@ -1234,7 +1234,7 @@ fn an_okey_is_paid_for_by_whoever_laid_it_not_by_the_owner_of_the_meld() {
 }
 
 #[test]
-fn generator_offers_the_okey_beside_a_tile_whose_twin_is_out() {
+fn generator_okey_beside_dead_twin() {
     let mut g = game(["K3 K3 K13 K13 S4 S4 Si1 Si1 M12 K9 M2 OK", "", "", ""]);
     let with = |g: &Game, tile: &str| {
         let want = Shape::Pair {
@@ -1256,7 +1256,7 @@ fn generator_offers_the_okey_beside_a_tile_whose_twin_is_out() {
 }
 
 #[test]
-fn a_bot_that_takes_the_side_tile_always_uses_it() {
+fn bot_uses_taken_tile() {
     let rules = Rules::default();
     let mut sv = Solver::new(&rules);
     let (mut takes, mut unused) = (0, Vec::new());

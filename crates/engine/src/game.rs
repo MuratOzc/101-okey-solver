@@ -22,7 +22,7 @@ pub enum Opened {
 pub struct Player {
     pub hand: Counts,
     pub opened: Opened,
-    pub gosterge_bonus: bool,
+    pub has_indicator: bool,
     pub penalty: i32,
 }
 
@@ -30,7 +30,8 @@ pub struct Player {
 pub struct FinishInfo {
     pub player: u8,
     pub okey: bool,
-    pub elden: bool,
+    #[serde(alias = "elden")]
+    pub in_one: bool,
     pub pairs: bool,
     pub last: Tile,
 }
@@ -50,7 +51,7 @@ pub enum OpenChoice {
     OpenPairs(LayStyle),
     /// Already opened.
     Lay(LayStyle),
-    /// Finish this turn (elden if not yet opened).
+    /// Finish this turn (in-one if not yet opened).
     Finish,
 }
 
@@ -93,7 +94,7 @@ pub enum Step {
 #[derive(Clone, Debug)]
 pub struct Game {
     pub rules: Rules,
-    pub gosterge: Tile,
+    pub indicator: Tile,
     pub players: [Player; 4],
     pub deck: Vec<Tile>,
     pub table: Table,
@@ -125,8 +126,8 @@ impl Game {
         total(&self.players[p as usize].hand)
     }
 
-    fn gosterge_for(&self, p: u8) -> Option<Tile> {
-        self.players[p as usize].gosterge_bonus.then_some(self.gosterge)
+    fn indicator_for(&self, p: u8) -> Option<Tile> {
+        self.players[p as usize].has_indicator.then_some(self.indicator)
     }
 
     fn lay_params(&self, p: u8, must: Option<Tile>) -> (Params, bool) {
@@ -249,7 +250,7 @@ impl Game {
         self.players[p as usize].penalty -= self.rules.big_pairs_reward(pairs);
     }
 
-    /// `p` has opened with `value` points or pairs; at a katlamalı table the next opening needs more.
+    /// `p` has opened with `value` points or pairs; at a raising table the next opening needs more.
     pub(crate) fn mark_opened(&mut self, p: u8, kind: Opened, value: i32) {
         self.players[p as usize].opened = kind;
         let (meld, pair) = self.rules.thresholds([(kind, value)]);
@@ -337,10 +338,10 @@ impl Game {
         if !self.rules.pairs_enabled || self.players[p as usize].opened != Opened::No {
             return None;
         }
-        if pair_stats(hand, &self.rules, self.gosterge_for(p)).0 < self.pair_req as usize {
+        if pair_stats(hand, &self.rules, self.indicator_for(p)).0 < self.pair_req as usize {
             return None;
         }
-        let pp = pair_plan(hand, &self.rules, self.gosterge_for(p));
+        let pp = pair_plan(hand, &self.rules, self.indicator_for(p));
         if (pp.pairs.len() as u8) < self.pair_req {
             return None;
         }
@@ -410,7 +411,7 @@ impl Game {
         }
     }
 
-    pub(crate) fn finish(&mut self, p: u8, last: Tile, elden: bool) -> Outcome {
+    pub(crate) fn finish(&mut self, p: u8, last: Tile, in_one: bool) -> Outcome {
         self.players[p as usize].hand[last as usize] -= 1;
         self.seen[last as usize] += 1;
         if let Some(log) = &mut self.log {
@@ -419,14 +420,14 @@ impl Game {
         Outcome::Finished(FinishInfo {
             player: p,
             okey: last == JOKER,
-            elden,
+            in_one,
             pairs: self.players[p as usize].opened == Opened::Pairs,
             last,
         })
     }
 
     /// Lay everything an opened player can. Returns Err if the side-taken tile cannot be used.
-    pub fn lay(&mut self, sv: &mut Solver, p: u8, must: Option<Tile>, elden: bool) -> Result<Option<Outcome>, ()> {
+    pub fn lay(&mut self, sv: &mut Solver, p: u8, must: Option<Tile>, in_one: bool) -> Result<Option<Outcome>, ()> {
         self.swap_jokers(p);
         let hand = self.players[p as usize].hand;
         if hand[JOKER as usize] > 0 && must != Some(JOKER) {
@@ -437,7 +438,7 @@ impl Game {
             {
                 let backup = self.clone();
                 if self.apply_plan_all(p, &plan) {
-                    return Ok(Some(self.finish(p, JOKER, elden)));
+                    return Ok(Some(self.finish(p, JOKER, in_one)));
                 }
                 *self = backup;
             }
@@ -473,7 +474,7 @@ impl Game {
         }
         if self.hand_len(p) == 1 {
             let last = tiles_of(&self.players[p as usize].hand)[0];
-            return Ok(Some(self.finish(p, last, elden)));
+            return Ok(Some(self.finish(p, last, in_one)));
         }
         Ok(None)
     }
@@ -513,15 +514,15 @@ impl Game {
         true
     }
 
-    /// Elden finish: every tile but the discard goes down as the player's own melds (or pairs).
+    /// In-one finish: every tile but the discard goes down as the player's own melds (or pairs).
     /// No lay-offs and no okey swaps: those need a normal opening first.
-    pub(crate) fn elden_plan(&self, sv: &mut Solver, p: u8, must: Option<Tile>) -> Option<(Vec<Shape>, Tile, bool)> {
-        self.elden_plan_with(sv, p, self.players[p as usize].hand, must)
+    pub(crate) fn in_one_plan(&self, sv: &mut Solver, p: u8, must: Option<Tile>) -> Option<(Vec<Shape>, Tile, bool)> {
+        self.in_one_plan_with(sv, p, self.players[p as usize].hand, must)
     }
 
-    fn elden_plan_with(&self, sv: &mut Solver, p: u8, hand: Counts, must: Option<Tile>) -> Option<(Vec<Shape>, Tile, bool)> {
+    fn in_one_plan_with(&self, sv: &mut Solver, p: u8, hand: Counts, must: Option<Tile>) -> Option<(Vec<Shape>, Tile, bool)> {
         let params = Params::cover(must);
-        let value_ok = |plan: &Plan| !self.rules.elden_requires_open_min || plan.open_value(&self.rules) >= self.meld_req;
+        let value_ok = |plan: &Plan| !self.rules.in_one_requires_open_min || plan.open_value(&self.rules) >= self.meld_req;
         let without = |sv: &mut Solver, last: Tile| -> Option<Vec<Shape>> {
             if must == Some(last) && hand[last as usize] == 1 {
                 return None;
@@ -532,13 +533,13 @@ impl Game {
                 .filter(|pl| pl.rest.is_empty() && value_ok(pl))
                 .map(|pl| pl.melds)
         };
-        // Two tiles that fit no meld at all rule elden out before any search.
+        // Two tiles that fit no meld at all rule in-one out before any search.
         let hopeless = stranded(&hand, &self.rules, 2) >= 2 || sv.left_over_at_least(&hand) >= 2;
         if let Some(full) = (!hopeless).then(|| sv.run(&hand, params, None)).flatten() {
             if must.is_none() {
                 sv.note_left_over(&hand, full.rest.len());
             }
-            // Dropping one tile removes at most one leftover, so two leftovers rule elden out.
+            // Dropping one tile removes at most one leftover, so two leftovers rule in-one out.
             if full.rest.len() <= 1 {
                 if hand[JOKER as usize] > 0
                     && let Some(melds) = without(sv, JOKER)
@@ -557,8 +558,8 @@ impl Game {
                 }
             }
         }
-        if self.rules.pairs_enabled && pair_stats(&hand, &self.rules, self.gosterge_for(p)).1 == 1 {
-            let pp = pair_plan(&hand, &self.rules, self.gosterge_for(p));
+        if self.rules.pairs_enabled && pair_stats(&hand, &self.rules, self.indicator_for(p)).1 == 1 {
+            let pp = pair_plan(&hand, &self.rules, self.indicator_for(p));
             if pp.rest.len() == 1 && must.is_none_or(|m| pp.pairs.iter().any(|s| s.uses(m))) {
                 return Some((pp.pairs, pp.rest[0], true));
             }
@@ -566,12 +567,12 @@ impl Game {
         None
     }
 
-    pub fn elden_possible(&self, sv: &mut Solver, p: u8, must: Option<Tile>) -> bool {
-        self.elden_plan(sv, p, must).is_some()
+    pub fn in_one_possible(&self, sv: &mut Solver, p: u8, must: Option<Tile>) -> bool {
+        self.in_one_plan(sv, p, must).is_some()
     }
 
-    fn do_elden(&mut self, sv: &mut Solver, p: u8, must: Option<Tile>) -> Option<Outcome> {
-        let (melds, last, pairs) = self.elden_plan(sv, p, must)?;
+    fn do_in_one(&mut self, sv: &mut Solver, p: u8, must: Option<Tile>) -> Option<Outcome> {
+        let (melds, last, pairs) = self.in_one_plan(sv, p, must)?;
         self.put_melds(p, &melds, true);
         self.players[p as usize].opened = if pairs { Opened::Pairs } else { Opened::Melds };
         Some(self.finish(p, last, true))
@@ -589,7 +590,7 @@ impl Game {
             }
             OpenChoice::Finish => {
                 if was_unopened {
-                    self.do_elden(sv, p, taken).map(Some).ok_or(())
+                    self.do_in_one(sv, p, taken).map(Some).ok_or(())
                 } else {
                     match self.lay(sv, p, taken, false)? {
                         Some(o) => Ok(Some(o)),
@@ -630,16 +631,16 @@ impl Game {
     fn after_open(&mut self, sv: &mut Solver, p: u8, lay: LayStyle) -> Result<Option<Outcome>, ()> {
         match lay {
             LayStyle::Nothing => Ok(None),
-            LayStyle::All => self.lay(sv, p, None, self.rules.open_finish_is_elden),
-            LayStyle::AllSafe => self.lay_safe(sv, p, None, self.rules.open_finish_is_elden),
+            LayStyle::All => self.lay(sv, p, None, self.rules.open_finish_is_in_one),
+            LayStyle::AllSafe => self.lay_safe(sv, p, None, self.rules.open_finish_is_in_one),
         }
     }
 
     /// `lay`, with okeys kept out of runs for this one turn.
-    fn lay_safe(&mut self, sv: &mut Solver, p: u8, must: Option<Tile>, elden: bool) -> Result<Option<Outcome>, ()> {
+    fn lay_safe(&mut self, sv: &mut Solver, p: u8, must: Option<Tile>, in_one: bool) -> Result<Option<Outcome>, ()> {
         let saved = self.policy[p as usize].joker_in_runs;
         self.policy[p as usize].joker_in_runs = false;
-        let res = self.lay(sv, p, must, elden);
+        let res = self.lay(sv, p, must, in_one);
         self.policy[p as usize].joker_in_runs = saved;
         res
     }
@@ -688,7 +689,7 @@ impl Game {
                 {
                     return true;
                 }
-                self.pairs_ok_with(p, &hand, Some(t)).is_some() || self.elden_plan_with(sv, p, hand, Some(t)).is_some()
+                self.pairs_ok_with(p, &hand, Some(t)).is_some() || self.in_one_plan_with(sv, p, hand, Some(t)).is_some()
             }
             _ => {
                 let all = total(&hand) as usize;
@@ -728,7 +729,7 @@ impl Game {
     pub fn scores(&self, out: &Outcome) -> [i32; 4] {
         let r = &self.rules;
         let (mult, fin) = match out {
-            Outcome::Finished(f) => (r.finish_mult(f.okey, f.elden, f.pairs), Some(f.player)),
+            Outcome::Finished(f) => (r.finish_mult(f.okey, f.in_one, f.pairs), Some(f.player)),
             Outcome::DeckOut => (1, None),
         };
         let mut s = [0i32; 4];
@@ -775,14 +776,14 @@ impl Game {
     pub fn deal(rules: &Rules, rng: &mut crate::rng::Rng, starter: u8) -> Game {
         let mut pool = tiles_of(&full_set());
         rng.shuffle(&mut pool);
-        let gosterge = loop {
+        let indicator = loop {
             let i = rng.below(pool.len());
             if pool[i] != JOKER {
                 break pool.swap_remove(i);
             }
         };
         let mut seen = [0u8; NIDS];
-        seen[gosterge as usize] += 1;
+        seen[indicator as usize] += 1;
         let players: Vec<Player> = (0..4u8)
             .map(|p| {
                 let n = rules.hand_size + if p == starter { rules.starter_extra } else { 0 };
@@ -790,18 +791,18 @@ impl Game {
                 for _ in 0..n {
                     hand[pool.pop().unwrap() as usize] += 1;
                 }
-                let gosterge_bonus = hand[gosterge as usize] > 0;
+                let has_indicator = hand[indicator as usize] > 0;
                 Player {
                     hand,
                     opened: Opened::No,
-                    gosterge_bonus,
+                    has_indicator,
                     penalty: 0,
                 }
             })
             .collect();
         Game {
             rules: rules.clone(),
-            gosterge,
+            indicator,
             players: players.try_into().expect("4 players"),
             deck: pool,
             table: Table::default(),

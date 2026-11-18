@@ -122,7 +122,7 @@ fn table_with(shape: Shape) -> Table {
 }
 
 #[test]
-fn layoff_two_per_end_per_turn() {
+fn layoff_two_per_end() {
     let r = Rules::default();
     let mut tb = table_with(classify(&[t("M6"), t("M7"), t("M8")], &r).unwrap());
     assert!(tb.lay_off(t("M9"), &r, true).is_some());
@@ -136,16 +136,16 @@ fn layoff_two_per_end_per_turn() {
 }
 
 #[test]
-fn islek_ignores_turn_counters() {
+fn playable_ignores_turn_counters() {
     let r = Rules::default();
     let mut tb = table_with(classify(&[t("M6"), t("M7"), t("M8")], &r).unwrap());
     tb.lay_off(t("M9"), &r, true);
     tb.lay_off(t("M10"), &r, true);
-    assert!(tb.is_islek(t("M11"), &r));
+    assert!(tb.is_playable(t("M11"), &r));
 }
 
 #[test]
-fn group_okey_needs_all_missing_colors() {
+fn group_okey_needs_all_colors() {
     let r = Rules::default();
     let tb = table_with(classify(&[t("S8"), t("M8"), JOKER], &r).unwrap());
     let slots = tb.joker_slots(&r);
@@ -218,7 +218,7 @@ fn sample_view(phase: Phase) -> View {
     players[3].discards.push(top);
     View {
         rules,
-        gosterge: g.gosterge,
+        indicator: g.indicator,
         hand,
         players,
         table: vec![],
@@ -280,7 +280,7 @@ fn describe_lists_physical_steps() {
         .collect();
     let view = View {
         rules,
-        gosterge: t("S7"),
+        indicator: t("S7"),
         hand,
         players: vec![PlayerView::default(); 4],
         table: vec![],
@@ -309,7 +309,7 @@ fn describe_lists_physical_steps() {
 }
 
 #[test]
-fn deals_played_elsewhere_count_the_same_as_deals_played_here() {
+fn worker_deals_count_the_same() {
     let view = sample_view(Phase::AfterDraw);
     let mut alone = Analyzer::new(view.clone(), 1).unwrap();
     alone.step(150);
@@ -335,7 +335,7 @@ fn deals_played_elsewhere_count_the_same_as_deals_played_here() {
 }
 
 #[test]
-fn late_results_count_only_for_what_is_still_alive() {
+fn late_results_only_for_alive() {
     let view = sample_view(Phase::AfterDraw);
     let mut boss = Analyzer::new(view.clone(), 1).unwrap();
     let mut hand = Analyzer::new(view, 2).unwrap();
@@ -354,7 +354,7 @@ fn late_results_count_only_for_what_is_still_alive() {
 }
 
 #[test]
-fn ready_but_unopened_counts_against_a_deal_only_in_the_last_round() {
+fn ready_hands_held_until_last_round() {
     let mut view = sample_view(Phase::AfterDraw);
     for p in 1..4 {
         view.players[p].discards = vec![t(["K1", "M2", "Si3"][p - 1])];
@@ -393,7 +393,7 @@ fn ready_but_unopened_counts_against_a_deal_only_in_the_last_round() {
 }
 
 #[test]
-fn lookahead_playouts_keep_every_tile_and_end_the_hand() {
+fn lookahead_conserves_tiles() {
     let rules = Rules::default();
     let mut sv = Solver::new(&rules);
     for seed in 0..60u64 {
@@ -409,7 +409,7 @@ fn lookahead_playouts_keep_every_tile_and_end_the_hand() {
 }
 
 #[test]
-fn analyzer_switches_to_lookahead_once_few_moves_remain() {
+fn lookahead_starts_with_few_moves() {
     let opts = Options {
         lookahead: true,
         ..Options::default()
@@ -450,7 +450,7 @@ fn rotating_seats_round_trips() {
 }
 
 #[test]
-fn agents_play_a_full_hand_from_any_seat() {
+fn agents_play_from_any_seat() {
     use okey_engine::agent::*;
     use okey_engine::policy::Policy;
     let rules = Rules::default();
@@ -497,7 +497,7 @@ const GOLDEN: [u64; 2] = [17992581461281428827, 11075590812157687950];
 
 /// The cheap pre-checks may only ever say "impossible" when the full search agrees.
 #[test]
-fn quick_bounds_never_contradict_the_search() {
+fn quick_bounds_match_search() {
     for high in [false, true] {
         let rules = Rules {
             one_after_thirteen: high,
@@ -529,7 +529,7 @@ fn quick_bounds_never_contradict_the_search() {
 /// Splitting a hand into independent parts must find exactly as good an arrangement as one big search,
 /// for every kind of question the engine asks.
 #[test]
-fn split_search_matches_the_whole_search() {
+fn split_search_matches_whole() {
     for high in [false, true] {
         let rules = Rules {
             one_after_thirteen: high,
@@ -584,7 +584,7 @@ fn split_search_matches_the_whole_search() {
 
 /// The remembered-hand bounds must hold between any two hands, however different.
 #[test]
-fn neighbour_bounds_never_contradict_the_search() {
+fn neighbour_bounds_match_search() {
     let rules = Rules::default();
     let mut sv = Solver::new(&rules);
     let open = Params::open(None);
@@ -623,7 +623,7 @@ fn neighbour_bounds_never_contradict_the_search() {
 }
 
 #[test]
-fn pair_stats_agree_with_the_full_pair_plan() {
+fn pair_stats_match_pair_plan() {
     use okey_engine::pairs::pair_stats;
     for (two, single) in [(false, true), (true, true), (false, false)] {
         let rules = Rules {
@@ -635,9 +635,13 @@ fn pair_stats_agree_with_the_full_pair_plan() {
             let g = Game::deal(&rules, &mut Rng::new(seed), 0);
             for p in 0..4 {
                 let hand = g.players[p].hand;
-                for gost in [None, Some(g.gosterge)] {
-                    let plan = pair_plan(&hand, &rules, gost);
-                    assert_eq!(pair_stats(&hand, &rules, gost), (plan.pairs.len(), plan.rest.len()), "seed {seed}");
+                for held_indicator in [None, Some(g.indicator)] {
+                    let plan = pair_plan(&hand, &rules, held_indicator);
+                    assert_eq!(
+                        pair_stats(&hand, &rules, held_indicator),
+                        (plan.pairs.len(), plan.rest.len()),
+                        "seed {seed}"
+                    );
                 }
             }
         }
@@ -645,7 +649,7 @@ fn pair_stats_agree_with_the_full_pair_plan() {
 }
 
 #[test]
-fn opponent_reads_are_exact_for_a_known_hand_and_sum_to_one() {
+fn reads_exact_for_known_hand() {
     use okey_engine::reads::{Now, read_opponents};
     let mut view = sample_view(Phase::AfterDraw);
     let g = Game::deal(&view.rules, &mut Rng::new(42), 0);
@@ -661,12 +665,12 @@ fn opponent_reads_are_exact_for_a_known_hand_and_sum_to_one() {
     };
     let reads = read_opponents(&view, now, 200, 3);
     assert_eq!(reads.len(), 3);
-    assert_eq!(reads[0].per, [exact; 3]);
+    assert_eq!(reads[0].opening, [exact; 3]);
     for r in &reads {
-        let bands: f32 = r.per_dist.iter().sum();
+        let bands: f32 = r.opening_dist.iter().sum();
         let pairs: f32 = r.pairs.iter().sum();
         assert!((bands - 1.0).abs() < 1e-3 && (pairs - 1.0).abs() < 1e-3, "{bands} {pairs}");
-        assert!(r.per[0] <= r.per[1] && r.per[1] <= r.per[2]);
+        assert!(r.opening[0] <= r.opening[1] && r.opening[1] <= r.opening[2]);
         assert!(r.p_either >= r.p_melds.max(r.p_pairs) - 1e-6);
         assert!(r.p_open_soon <= r.p_open_end + 1e-6 && r.p_open_end <= 1.0 + 1e-6);
         assert!(r.p_finish_soon <= r.p_finish_end + 1e-6);
@@ -683,7 +687,7 @@ fn opponent_reads_are_exact_for_a_known_hand_and_sum_to_one() {
 }
 
 #[test]
-fn an_okey_entered_first_or_last_stands_at_that_end() {
+fn okey_entered_at_run_end() {
     let r = Rules::default();
     let run = |s: &str| {
         classify(

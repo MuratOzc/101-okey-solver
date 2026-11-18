@@ -12,7 +12,8 @@ pub struct Rules {
     pub open_min: i32,
     pub pairs_enabled: bool,
     pub pair_min: u8,
-    pub katlamali: bool,
+    #[serde(alias = "katlamali")]
+    pub raising: bool,
     pub raise_meld_by: i32,
     pub raise_pair_by: u8,
 
@@ -27,7 +28,8 @@ pub struct Rules {
 
     pub joker_pairs_with_single: bool,
     pub two_jokers_pair: bool,
-    pub gosterge_pair: bool,
+    #[serde(alias = "gosterge_pair")]
+    pub indicator_pair: bool,
 
     pub take_must_use: bool,
     pub take_penalty_enabled: bool,
@@ -47,13 +49,18 @@ pub struct Rules {
     pub pair_hand_mult: i32,
     pub joker_in_hand: i32,
     pub mult_okey_finish: i32,
-    pub mult_elden: i32,
+    #[serde(alias = "mult_elden")]
+    pub mult_in_one: i32,
     pub mult_pair_finish: i32,
-    pub elden_requires_open_min: bool,
-    pub open_finish_is_elden: bool,
+    #[serde(alias = "elden_requires_open_min")]
+    pub in_one_requires_open_min: bool,
+    #[serde(alias = "open_finish_is_elden")]
+    pub open_finish_is_in_one: bool,
 
-    pub penalty_islek: i32,
-    pub islek_applies_unopened: bool,
+    #[serde(alias = "penalty_islek")]
+    pub penalty_playable: i32,
+    #[serde(alias = "islek_applies_unopened")]
+    pub playable_applies_unopened: bool,
     pub penalty_discard_joker: i32,
 
     pub big_pairs_penalty: i32,
@@ -76,7 +83,7 @@ impl Rules {
     /// What opening needs once the given openings (kind, points or pairs) are down: (meld points, pairs).
     pub fn thresholds(&self, openings: impl IntoIterator<Item = (Opened, i32)>) -> (i32, u8) {
         let (mut meld, mut pair) = (self.open_min, self.pair_min);
-        if self.katlamali {
+        if self.raising {
             for (kind, value) in openings {
                 match kind {
                     Opened::Melds => meld = meld.max(value + self.raise_meld_by),
@@ -94,10 +101,10 @@ impl Rules {
     }
 
     /// What every score of the hand is multiplied by after such a finish.
-    pub fn finish_mult(&self, okey: bool, elden: bool, pairs: bool) -> i32 {
+    pub fn finish_mult(&self, okey: bool, in_one: bool, pairs: bool) -> i32 {
         [
             (okey, self.mult_okey_finish),
-            (elden, self.mult_elden),
+            (in_one, self.mult_in_one),
             (pairs, self.mult_pair_finish),
         ]
         .into_iter()
@@ -126,7 +133,7 @@ impl Default for Rules {
             open_min: 101,
             pairs_enabled: true,
             pair_min: 5,
-            katlamali: false,
+            raising: false,
             raise_meld_by: 1,
             raise_pair_by: 1,
             meld_min_len: 3,
@@ -137,7 +144,7 @@ impl Default for Rules {
             high_one_value: 1,
             joker_pairs_with_single: true,
             two_jokers_pair: false,
-            gosterge_pair: true,
+            indicator_pair: true,
             take_must_use: true,
             take_penalty_enabled: false,
             take_penalty_mult: 10,
@@ -153,12 +160,12 @@ impl Default for Rules {
             pair_hand_mult: 2,
             joker_in_hand: 101,
             mult_okey_finish: 2,
-            mult_elden: 2,
+            mult_in_one: 2,
             mult_pair_finish: 2,
-            elden_requires_open_min: false,
-            open_finish_is_elden: false,
-            penalty_islek: 101,
-            islek_applies_unopened: true,
+            in_one_requires_open_min: false,
+            open_finish_is_in_one: false,
+            penalty_playable: 101,
+            playable_applies_unopened: true,
             penalty_discard_joker: 101,
             big_pairs_penalty: 101,
             big_pairs_min: 7,

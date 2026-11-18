@@ -55,7 +55,7 @@ fn midgame(seed: u64, turns: usize) -> Option<Game> {
 }
 
 #[test]
-fn inputs_show_nothing_of_the_hidden_tiles() {
+fn inputs_hide_unseen_tiles() {
     let rules = Rules::default();
     let mut sv = Solver::new(&rules);
     let mut checked = 0;
@@ -84,7 +84,7 @@ fn inputs_show_nothing_of_the_hidden_tiles() {
 }
 
 #[test]
-fn a_network_is_evaluated_as_written() {
+fn network_evaluates_as_written() {
     let mut k = 0;
     let mut weight = || {
         k += 1;
@@ -118,7 +118,7 @@ fn a_network_is_evaluated_as_written() {
 }
 
 #[test]
-fn the_model_player_never_loses_or_invents_a_tile() {
+fn model_player_conserves_tiles() {
     let rules = Rules::default();
     let mut sv = Solver::new(&rules);
     let mut ended = 0;
@@ -150,7 +150,7 @@ fn the_model_player_never_loses_or_invents_a_tile() {
 }
 
 #[test]
-fn the_search_uses_the_network_only_where_it_was_trained() {
+fn network_only_where_trained() {
     let g = (0..50).find_map(|seed| midgame(seed, 8).filter(|g| g.current == 0)).unwrap();
     let uses = |partners: bool, change: &dyn Fn(&mut okey_engine::analysis::View)| {
         let mut view = public_view(&g, Phase::BeforeDraw, None);
@@ -167,7 +167,7 @@ fn the_search_uses_the_network_only_where_it_was_trained() {
     assert!(!uses(false, &|v| v.rules.partners = true));
     assert!(uses(true, &|v| v.rules.partners = true));
     assert!(!uses(true, &|_| {}));
-    assert!(!uses(false, &|v| v.rules.katlamali = true));
+    assert!(!uses(false, &|v| v.rules.raising = true));
     let stakes = |hands_left| {
         move |v: &mut okey_engine::analysis::View| {
             v.stakes = Some(Stakes {
@@ -184,7 +184,7 @@ fn the_search_uses_the_network_only_where_it_was_trained() {
 }
 
 #[test]
-fn only_deals_played_to_the_end_count_toward_how_the_hand_ends() {
+fn endings_from_whole_deals_only() {
     let g = (0..50).find_map(|seed| midgame(seed, 4).filter(|g| g.current == 0)).unwrap();
     let report = |horizon: u8, stakes: Option<Stakes>| {
         let mut view = public_view(&g, Phase::BeforeDraw, None);
@@ -232,7 +232,7 @@ fn only_deals_played_to_the_end_count_toward_how_the_hand_ends() {
 }
 
 #[test]
-fn a_position_valued_from_a_near_one_gets_the_same_value() {
+fn near_valuation_matches() {
     let rules = Rules::default();
     let mut sv = Solver::new(&rules);
     let net = random_net(11, false);

@@ -10,7 +10,8 @@ pub struct PlayerView {
     pub opened: Opened,
     pub open_value: i32,
     pub hand_len: Option<u8>,
-    pub gosterge_bonus: bool,
+    #[serde(alias = "gosterge_bonus")]
+    pub has_indicator: bool,
 }
 
 impl Default for PlayerView {
@@ -21,17 +22,17 @@ impl Default for PlayerView {
             opened: Opened::No,
             open_value: 0,
             hand_len: None,
-            gosterge_bonus: false,
+            has_indicator: false,
         }
     }
 }
 
-/// How many copies of each tile the holder of `hand` has seen: the hand, the gösterge, every
+/// How many copies of each tile the holder of `hand` has seen: the hand, the indicator, every
 /// discard and shown tile, and the table.
-pub fn seen_tiles(hand: &[Tile], gosterge: Option<Tile>, players: &[PlayerView], table: &[TableMeld]) -> Counts {
+pub fn seen_tiles(hand: &[Tile], indicator: Option<Tile>, players: &[PlayerView], table: &[TableMeld]) -> Counts {
     let mut c = [0u8; NIDS];
     let shown = players.iter().flat_map(|p| p.discards.iter().chain(&p.known));
-    for &t in hand.iter().chain(&gosterge).chain(shown) {
+    for &t in hand.iter().chain(&indicator).chain(shown) {
         c[t as usize] = c[t as usize].saturating_add(1);
     }
     for t in table.iter().flat_map(|m| m.shape.tiles()) {
@@ -51,7 +52,8 @@ pub enum Phase {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct View {
     pub rules: Rules,
-    pub gosterge: Tile,
+    #[serde(alias = "gosterge")]
+    pub indicator: Tile,
     pub hand: Vec<Tile>,
     pub players: Vec<PlayerView>,
     pub table: Vec<TableMeld>,
@@ -75,7 +77,7 @@ impl View {
     }
 
     pub fn seen(&self) -> Counts {
-        seen_tiles(&self.hand, Some(self.gosterge), &self.players, &self.table)
+        seen_tiles(&self.hand, Some(self.indicator), &self.players, &self.table)
     }
 
     pub fn unseen(&self) -> Counts {
@@ -120,7 +122,7 @@ impl View {
         rng.shuffle(&mut pool);
         let (meld_req, pair_req) = self.requirements();
         let mut seen = [0u8; NIDS];
-        seen[self.gosterge as usize] += 1;
+        seen[self.indicator as usize] += 1;
         for p in &self.players {
             p.discards.iter().for_each(|&t| seen[t as usize] += 1);
         }
@@ -147,7 +149,7 @@ impl View {
             players.push(Player {
                 hand,
                 opened: pv.opened,
-                gosterge_bonus: pv.gosterge_bonus,
+                has_indicator: pv.has_indicator,
                 penalty: 0,
             });
         }
@@ -164,7 +166,7 @@ impl View {
         }
         Game {
             rules: self.rules.clone(),
-            gosterge: self.gosterge,
+            indicator: self.indicator,
             players: players.try_into().expect("4 players"),
             deck: pool,
             table: Table {
@@ -206,10 +208,10 @@ pub fn public_view(g: &Game, phase: Phase, taken: Option<Tile>) -> View {
         players[p].discards = tiles_of(&pile);
         players[p].discards.extend(last);
     }
-    players[0].gosterge_bonus = g.players[0].gosterge_bonus;
+    players[0].has_indicator = g.players[0].has_indicator;
     View {
         rules: g.rules.clone(),
-        gosterge: g.gosterge,
+        indicator: g.indicator,
         hand: tiles_of(&g.players[0].hand),
         players,
         table: g.table.melds.clone(),

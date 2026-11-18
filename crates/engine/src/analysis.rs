@@ -309,7 +309,7 @@ impl Analyzer {
             if ds.is_empty() {
                 continue;
             }
-            // Throwing an işlek tile or an okey costs a flat penalty: never worth it while a free discard exists.
+            // Throwing an playable tile or an okey costs a flat penalty: never worth it while a free discard exists.
             let cheapest = ds.iter().map(|&t| g2.discard_penalty(0, t)).min().unwrap_or(0);
             ds.retain(|&t| g2.discard_penalty(0, t) == cheapest);
             defaults.push(if total(&hand) == 1 { ds[0] } else { g2.bot_discard(sv, 0) });

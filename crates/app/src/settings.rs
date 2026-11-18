@@ -31,7 +31,7 @@ fn bools() -> Vec<(&'static str, Vec<(&'static str, GetB, SetB)>)> {
                 b!("Çiftle açma var", pairs_enabled),
                 b!("Okey + tek taş = çift", joker_pairs_with_single),
                 b!("İki okey = çift", two_jokers_pair),
-                b!("Gösterge (dağıtımda geldiyse) herhangi bir taşla çift", gosterge_pair),
+                b!("Gösterge (dağıtımda geldiyse) herhangi bir taşla çift", indicator_pair),
                 b!("12-13-1 serisi geçerli", one_after_thirteen),
             ],
         ),
@@ -56,9 +56,9 @@ fn bools() -> Vec<(&'static str, Vec<(&'static str, GetB, SetB)>)> {
         (
             "Puan",
             vec![
-                b!("Elden bitmede de açılış barajı aranır", elden_requires_open_min),
-                b!("Açıp aynı turda işleyerek bitirmek de elden sayılır", open_finish_is_elden),
-                b!("İşlek cezası açmamış oyuncuya da yazılır", islek_applies_unopened),
+                b!("Elden bitmede de açılış barajı aranır", in_one_requires_open_min),
+                b!("Açıp aynı turda işleyerek bitirmek de elden sayılır", open_finish_is_in_one),
+                b!("İşlek cezası açmamış oyuncuya da yazılır", playable_applies_unopened),
             ],
         ),
     ]
@@ -95,14 +95,14 @@ fn nums() -> Vec<(&'static str, Vec<(&'static str, GetN, SetN)>)> {
                 n!("Çift açanın eli çarpanı", pair_hand_mult),
                 n!("Elde kalan okey başına", joker_in_hand),
                 n!("Okey atıp bitirme çarpanı", mult_okey_finish),
-                n!("Elden bitme çarpanı", mult_elden),
+                n!("Elden bitme çarpanı", mult_in_one),
                 n!("Çiftle bitirme çarpanı", mult_pair_finish),
             ],
         ),
         (
             "Cezalar",
             vec![
-                n!("İşlek taş atma", penalty_islek),
+                n!("İşlek taş atma", penalty_playable),
                 n!("Okey atma", penalty_discard_joker),
                 n!("Okeyini rakibe kaptırma", okey_lost_penalty),
                 n!("Çok çiftle açana eksi yazılır (0 = yok)", big_pairs_penalty),
@@ -134,15 +134,15 @@ pub fn Basics() -> impl IntoView {
             </div>
             <h3>"Per sayımı"</h3>
             <div class="seg">
-                <button class="btn light" class:on=move || st.with(|s| !s.yan)
-                    on:click=move |_| ctx.act(|s| { s.yan = false; Ok(()) })>{move || st.with(|s| s.rules.open_min.to_string())}</button>
-                <button class="btn light" class:on=move || st.with(|s| s.yan)
-                    on:click=move |_| ctx.act(|s| { s.yan = true; Ok(()) })>{move || st.with(|s| crate::state::count(s.rules.open_min, true))}</button>
+                <button class="btn light" class:on=move || st.with(|s| !s.thirds)
+                    on:click=move |_| ctx.act(|s| { s.thirds = false; Ok(()) })>{move || st.with(|s| s.rules.open_min.to_string())}</button>
+                <button class="btn light" class:on=move || st.with(|s| s.thirds)
+                    on:click=move |_| ctx.act(|s| { s.thirds = true; Ok(()) })>{move || st.with(|s| crate::state::count(s.rules.open_min, true))}</button>
             </div>
             <label class="opt">
                 <input type="checkbox"
-                    prop:checked=move || st.with(|s| s.rules.katlamali)
-                    on:change=move |ev| { let v = event_target_checked(&ev); set_rules(Box::new(move |r| r.katlamali = v)) }
+                    prop:checked=move || st.with(|s| s.rules.raising)
+                    on:change=move |ev| { let v = event_target_checked(&ev); set_rules(Box::new(move |r| r.raising = v)) }
                 />
                 "Katlamalı"
             </label>

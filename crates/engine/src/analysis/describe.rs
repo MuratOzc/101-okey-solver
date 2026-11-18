@@ -46,7 +46,7 @@ pub(super) fn shape_short(sh: &Shape) -> String {
         Shape::Group { num, .. } => format!("{num}×{}{okey}", sh.len()),
         Shape::Pair { tile, .. } if tile == JOKER => "okey çifti".to_string(),
         Shape::Pair { tile, joker } => format!("{} çift{}", short(tile), if joker { "+okey" } else { "" }),
-        Shape::GostergePair { other, .. } => format!("gösterge+{}", short(other)),
+        Shape::IndicatorPair { other, .. } => format!("gösterge+{}", short(other)),
     }
 }
 
@@ -133,10 +133,10 @@ pub fn hand_report(view: &View) -> HandReport {
     let (meld_req, pair_req) = view.requirements();
     let hand = counts_from(&view.hand);
     let g = view.determinize(&mut Rng::new(7));
-    let gost = view.players[0].gosterge_bonus.then_some(view.gosterge);
+    let held_indicator = view.players[0].has_indicator.then_some(view.indicator);
     let plan = g.open_search(&mut sv, &hand, None).unwrap_or_default();
     let open_value = plan.open_value(&view.rules);
-    let pairs = pair_plan(&hand, &view.rules, gost).pairs.len() as u8;
+    let pairs = pair_plan(&hand, &view.rules, held_indicator).pairs.len() as u8;
     let unseen = view.unseen();
     let mut outs = Vec::new();
     for t in 0..NIDS as Tile {
@@ -146,7 +146,7 @@ pub fn hand_report(view: &View) -> HandReport {
         let mut h = hand;
         h[t as usize] += 1;
         let v = g.open_search(&mut sv, &h, None).map_or(0, |p| p.open_value(&view.rules));
-        let pr = pair_plan(&h, &view.rules, gost).pairs.len() as u8;
+        let pr = pair_plan(&h, &view.rules, held_indicator).pairs.len() as u8;
         if v > open_value || pr > pairs {
             outs.push(Out {
                 tile: t,

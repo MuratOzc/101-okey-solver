@@ -16,9 +16,11 @@ pub struct Read {
     pub seat: u8,
     pub opened: Opened,
     /// Best meld opening the hand holds now: 10%, 50% and 90% points.
-    pub per: [i32; 3],
+    #[serde(alias = "per")]
+    pub opening: [i32; 3],
     /// Share per best opening total (index = total).
-    pub per_dist: Vec<f32>,
+    #[serde(alias = "per_dist")]
+    pub opening_dist: Vec<f32>,
     /// Share per pair count; the last entry is `MAX_PAIRS` or more.
     pub pairs: Vec<f32>,
     pub meld_req: i32,
@@ -144,8 +146,8 @@ pub fn read_with(view: &View, now: Option<Now>, deals: usize, seed: u64, infer: 
             let i = o - 1;
             let p = &g.players[o];
             let v = g.open_search(&mut sv, &p.hand, None).map_or(0, |pl| pl.open_value(&view.rules));
-            let gost = p.gosterge_bonus.then_some(view.gosterge);
-            let n = pair_stats(&p.hand, &view.rules, gost).0;
+            let held_indicator = p.has_indicator.then_some(view.indicator);
+            let n = pair_stats(&p.hand, &view.rules, held_indicator).0;
             let jokers = p.hand[JOKER as usize] as i32;
             let plain = hand_penalty(&p.hand, &view.rules) - jokers * view.rules.joker_in_hand;
             let pts = plain * if p.opened == Opened::Pairs { 2 } else { 1 };
@@ -179,7 +181,7 @@ pub fn read_with(view: &View, now: Option<Now>, deals: usize, seed: u64, infer: 
             Read {
                 seat: i as u8 + 1,
                 opened: view.players[i + 1].opened,
-                per_dist: dist,
+                opening_dist: dist,
                 p_melds: melds[i] / t,
                 p_pairs: by_pairs[i] / t,
                 p_either: either[i] / t,
@@ -188,7 +190,7 @@ pub fn read_with(view: &View, now: Option<Now>, deals: usize, seed: u64, infer: 
                 p_open_end: ahead[i][1] / t,
                 p_finish_soon: ahead[i][2] / t,
                 p_finish_end: ahead[i][3] / t,
-                per: quantiles(&mut pers[i]),
+                opening: quantiles(&mut pers[i]),
                 pairs: pd,
                 points: quantiles(&mut points[i]),
                 meld_req,

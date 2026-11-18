@@ -73,7 +73,7 @@ impl Game {
         let (value, pairs, plan) = match pl.opened {
             Opened::No => {
                 let value = self.open_search(sv, &hand, None).map_or(0, |plan| plan.open_value(&self.rules));
-                let pairs = pair_stats(&hand, &self.rules, self.gosterge_for(p)).0;
+                let pairs = pair_stats(&hand, &self.rules, self.indicator_for(p)).0;
                 (value, pairs, sv.run(&hand, Params::cover(None), None))
             }
             _ => (0, 0, self.lay_search(sv, p, &hand, None)),
@@ -98,12 +98,12 @@ impl Game {
         let joins = |u: usize| u == JOKER as usize || hand[u] > 0 || conn(&hand, u as Tile) > 0;
         if pl.opened == Opened::No {
             let value = self.open_search(sv, &hand, None).map_or(0, |plan| plan.open_value(&self.rules));
-            let pairs = pair_stats(&hand, &self.rules, self.gosterge_for(p)).0;
+            let pairs = pair_stats(&hand, &self.rules, self.indicator_for(p)).0;
             for u in (0..NIDS).filter(|&u| live(u) && joins(u)) {
                 let mut h = hand;
                 h[u] += 1;
                 let v = self.open_search(sv, &h, None).map_or(0, |plan| plan.open_value(&self.rules));
-                let n = pair_stats(&h, &self.rules, self.gosterge_for(p)).0;
+                let n = pair_stats(&h, &self.rules, self.indicator_for(p)).0;
                 out[u] = (v >= self.meld_req || n >= self.pair_req as usize, v > value || n > pairs);
             }
         } else {

@@ -19,7 +19,8 @@ pub enum Stage {
 /// The single thing the app is asking for right now.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Mode {
-    Gosterge,
+    #[serde(alias = "Gosterge")]
+    Indicator,
     Starter,
     Hand,
     /// Waiting on the current player's next action.
@@ -41,7 +42,8 @@ pub const SEAT_NAMES: [&str; 4] = ["Ben", "Sağ", "Karşı", "Sol"];
 pub struct State {
     pub rules: Rules,
     pub stage: Stage,
-    pub gosterge: Option<Tile>,
+    #[serde(alias = "gosterge")]
+    pub indicator: Option<Tile>,
     pub hand: Vec<Tile>,
     pub players: Vec<PlayerView>,
     pub table: Table,
@@ -59,7 +61,8 @@ pub struct State {
     pub model: bool,
     /// Show meld totals the way the table counts them: thirds, with what is left over as "yan".
     #[serde(default)]
-    pub yan: bool,
+    #[serde(alias = "yan")]
+    pub thirds: bool,
     pub hand_no: u8,
     pub hands_total: u8,
     pub totals: [i32; 4],
@@ -68,7 +71,8 @@ pub struct State {
     pub big_pairs_paid: bool,
     pub finisher: Option<u8>,
     pub fin_okey: bool,
-    pub fin_elden: bool,
+    #[serde(alias = "fin_elden")]
+    pub fin_in_one: bool,
     pub left: [Option<i32>; 4],
     pub okeys_left: [u8; 4],
 }
@@ -78,7 +82,7 @@ impl Default for State {
         State {
             rules: Rules::default(),
             stage: Stage::Setup,
-            gosterge: None,
+            indicator: None,
             hand: vec![],
             players: vec![PlayerView::default(); 4],
             table: Table::default(),
@@ -91,10 +95,10 @@ impl Default for State {
             touched_table: false,
             first_turn: true,
             buffer: vec![],
-            mode: Mode::Gosterge,
+            mode: Mode::Indicator,
             result: None,
             model: true,
-            yan: false,
+            thirds: false,
             hand_no: 1,
             hands_total: 11,
             totals: [0; 4],
@@ -103,7 +107,7 @@ impl Default for State {
             big_pairs_paid: false,
             finisher: None,
             fin_okey: false,
-            fin_elden: false,
+            fin_in_one: false,
             left: [None; 4],
             okeys_left: [0; 4],
         }
@@ -113,8 +117,8 @@ impl Default for State {
 type R = Result<(), String>;
 
 /// A meld total as the table counts it: 101, or "33 yan 2".
-pub fn count(v: i32, yan: bool) -> String {
-    match (yan, v.div_euclid(3), v.rem_euclid(3)) {
+pub fn count(v: i32, thirds: bool) -> String {
+    match (thirds, v.div_euclid(3), v.rem_euclid(3)) {
         (false, ..) => v.to_string(),
         (true, base, 0) => base.to_string(),
         (true, base, left) => format!("{base} yan {left}"),
@@ -148,7 +152,7 @@ impl State {
             rules: self.rules.clone(),
             starter: (self.starter + 1) % 4,
             model: self.model,
-            yan: self.yan,
+            thirds: self.thirds,
             hand_no: (self.hand_no + 1).min(self.hands_total),
             hands_total: self.hands_total,
             totals,
@@ -161,7 +165,7 @@ impl State {
         State {
             rules: self.rules.clone(),
             model: self.model,
-            yan: self.yan,
+            thirds: self.thirds,
             hands_total: self.hands_total,
             ..State::default()
         }
@@ -174,7 +178,7 @@ impl State {
         }
         let r = &self.rules;
         let mult = self.finisher.map_or(1, |f| {
-            r.finish_mult(self.fin_okey, self.fin_elden, self.players[f as usize].opened == Opened::Pairs)
+            r.finish_mult(self.fin_okey, self.fin_in_one, self.players[f as usize].opened == Opened::Pairs)
         });
         let mut out = [0; 4];
         for p in 0..4u8 {
@@ -208,7 +212,7 @@ impl State {
     }
 
     pub fn seen(&self) -> Counts {
-        seen_tiles(&self.hand, self.gosterge, &self.players, &self.table.melds)
+        seen_tiles(&self.hand, self.indicator, &self.players, &self.table.melds)
     }
 
     /// Whether the player whose turn it is may lay tiles or discard (has drawn, or starts the hand).
@@ -238,7 +242,7 @@ impl State {
             return false;
         }
         match self.mode {
-            Mode::Gosterge => t != JOKER && self.hand.iter().filter(|&&x| x == t).count() < 2,
+            Mode::Indicator => t != JOKER && self.hand.iter().filter(|&&x| x == t).count() < 2,
             Mode::Hand | Mode::PickDraw => self.seen()[t as usize] < 2,
             Mode::Idle | Mode::MeldEntry => self.available(t) > 0,
             Mode::PairEntry { okey: true, .. } => t != JOKER && self.available(t) > 0 && self.available(JOKER) > 0,
@@ -249,7 +253,7 @@ impl State {
 
     pub fn keyboard_visible(&self) -> bool {
         match (self.stage, self.mode) {
-            (Stage::Setup, Mode::Gosterge | Mode::Hand) => true,
+            (Stage::Setup, Mode::Indicator | Mode::Hand) => true,
             (Stage::Play, Mode::PickDraw | Mode::PairEntry { .. }) => true,
             (Stage::Play, Mode::MeldEntry) => self.turn != 0,
             (Stage::Play, Mode::Idle) => self.turn != 0 && self.may_act(),
@@ -262,8 +266,8 @@ impl State {
             return Err(format!("{} şu an girilemez", name(t)));
         }
         match self.mode {
-            Mode::Gosterge => {
-                self.gosterge = Some(t);
+            Mode::Indicator => {
+                self.indicator = Some(t);
                 self.mode = if self.hand.is_empty() { Mode::Starter } else { Mode::Hand };
                 Ok(())
             }
@@ -299,7 +303,7 @@ impl State {
     }
 
     pub fn start(&mut self) -> R {
-        let Some(g) = self.gosterge else {
+        let Some(g) = self.indicator else {
             return Err("Önce göstergeyi seç".into());
         };
         if self.hand.len() != self.expected_hand() {
@@ -311,7 +315,7 @@ impl State {
             let extra = if self.starter == p { self.rules.starter_extra } else { 0 };
             self.players[p as usize].hand_len = Some(self.rules.hand_size + extra);
         }
-        self.players[0].gosterge_bonus = self.hand.contains(&g);
+        self.players[0].has_indicator = self.hand.contains(&g);
         self.turn = self.starter;
         self.first_turn = true;
         self.drawn = false;
@@ -527,17 +531,17 @@ impl State {
         }
     }
 
-    /// A half-laid opening may end the turn only by going out with it (elden).
+    /// A half-laid opening may end the turn only by going out with it (in-one).
     pub fn may_discard(&self) -> bool {
-        self.opening_complete() || (self.last_tile() && !self.rules.elden_requires_open_min)
+        self.opening_complete() || (self.last_tile() && !self.rules.in_one_requires_open_min)
     }
 
     pub fn total(&self, v: i32) -> String {
-        count(v, self.yan)
+        count(v, self.thirds)
     }
 
     pub fn points(&self, v: i32) -> String {
-        if self.yan { self.total(v) } else { format!("{v} puan") }
+        if self.thirds { self.total(v) } else { format!("{v} puan") }
     }
 
     /// "87 / 101" style progress for an opening in progress.
@@ -553,13 +557,13 @@ impl State {
     }
 
     pub fn buffer_shape(&self) -> Option<Shape> {
-        classify(&self.buffer, &self.rules).or_else(|| self.gosterge_pair())
+        classify(&self.buffer, &self.rules).or_else(|| self.indicator_pair())
     }
 
-    /// The gösterge's twin with any other tile, for whoever was dealt it. Opponents are taken at
+    /// The indicator's twin with any other tile, for whoever was dealt it. Opponents are taken at
     /// their word; I only had it if it was in my dealt hand.
-    fn gosterge_pair(&self) -> Option<Shape> {
-        let g = self.gosterge.filter(|_| self.rules.gosterge_pair)?;
+    fn indicator_pair(&self) -> Option<Shape> {
+        let g = self.indicator.filter(|_| self.rules.indicator_pair)?;
         let &[a, b] = self.buffer.as_slice() else { return None };
         let other = if a == g {
             b
@@ -568,8 +572,8 @@ impl State {
         } else {
             return None;
         };
-        let dealt = self.turn != 0 || self.players[0].gosterge_bonus;
-        (other != JOKER && dealt).then_some(Shape::GostergePair { gosterge: g, other })
+        let dealt = self.turn != 0 || self.players[0].has_indicator;
+        (other != JOKER && dealt).then_some(Shape::IndicatorPair { indicator: g, other })
     }
 
     /// Why the buffer cannot be laid as a new meld right now, if it cannot.
@@ -611,8 +615,8 @@ impl State {
         let value = if as_pair { 1 } else { shape.open_value(&self.rules) };
         let opening = self.opened_this_turn;
         let pv = &mut self.players[p as usize];
-        if matches!(shape, Shape::GostergePair { .. }) {
-            pv.gosterge_bonus = true;
+        if matches!(shape, Shape::IndicatorPair { .. }) {
+            pv.has_indicator = true;
         }
         if pv.opened == Opened::No {
             pv.opened = if as_pair { Opened::Pairs } else { Opened::Melds };
@@ -757,7 +761,7 @@ impl State {
         self.result = Some(format!("{} bitirdi", SEAT_NAMES[p as usize]));
         self.finisher = Some(p);
         self.fin_okey = last == Some(JOKER);
-        self.fin_elden = p == self.turn && self.opened_this_turn && (!self.touched_table || self.rules.open_finish_is_elden);
+        self.fin_in_one = p == self.turn && self.opened_this_turn && (!self.touched_table || self.rules.open_finish_is_in_one);
         self.stage = Stage::Over;
         self.mode = Mode::Idle;
     }
@@ -790,7 +794,7 @@ impl State {
     pub fn view_as(&self, phase: Phase) -> Option<View> {
         Some(View {
             rules: self.rules.clone(),
-            gosterge: self.gosterge?,
+            indicator: self.indicator?,
             hand: self.hand.clone(),
             players: self.players.clone(),
             table: self.table.melds.clone(),

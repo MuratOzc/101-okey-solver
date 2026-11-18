@@ -23,8 +23,10 @@ pub enum Shape {
         tile: Tile,
         joker: bool,
     },
-    GostergePair {
-        gosterge: Tile,
+    #[serde(alias = "GostergePair")]
+    IndicatorPair {
+        #[serde(alias = "gosterge")]
+        indicator: Tile,
         other: Tile,
     },
 }
@@ -81,8 +83,8 @@ impl Shape {
                 l.push(tile);
                 l.push(if tile == JOKER || joker { JOKER } else { tile });
             }
-            Shape::GostergePair { gosterge, other } => {
-                l.push(gosterge);
+            Shape::IndicatorPair { indicator, other } => {
+                l.push(indicator);
                 l.push(other);
             }
         }
@@ -102,7 +104,7 @@ impl Shape {
     }
 
     pub fn is_pair(&self) -> bool {
-        matches!(self, Shape::Pair { .. } | Shape::GostergePair { .. })
+        matches!(self, Shape::Pair { .. } | Shape::IndicatorPair { .. })
     }
 
     pub fn jokers(&self) -> u8 {
@@ -116,7 +118,7 @@ impl Shape {
                     joker as u8
                 }
             }
-            Shape::GostergePair { .. } => 0,
+            Shape::IndicatorPair { .. } => 0,
         }
     }
 

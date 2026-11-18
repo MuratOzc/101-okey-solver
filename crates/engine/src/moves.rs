@@ -36,7 +36,7 @@ pub struct Move {
 
 /// What `play_acts` found out about the turn so far.
 pub struct ActsDone {
-    /// Melds were laid but the opening threshold was not reached: legal only as an elden finish.
+    /// Melds were laid but the opening threshold was not reached: legal only as an in-one finish.
     pub short_opening: bool,
     pub only_own_melds: bool,
     pub pairs: bool,
@@ -95,7 +95,7 @@ impl Game {
                         if !r.pairs_enabled || opened == Opened::Melds || value > 0 {
                             return Err(());
                         }
-                        if matches!(shape, Shape::GostergePair { .. }) && !self.players[pi].gosterge_bonus {
+                        if matches!(shape, Shape::IndicatorPair { .. }) && !self.players[pi].has_indicator {
                             return Err(());
                         }
                         if start == Opened::Pairs {
@@ -184,14 +184,14 @@ impl Game {
         }
         let finishing = self.hand_len(p) == 1;
         if done.short_opening {
-            if !finishing || !done.only_own_melds || self.rules.elden_requires_open_min {
+            if !finishing || !done.only_own_melds || self.rules.in_one_requires_open_min {
                 return Err(());
             }
             self.players[pi].opened = if done.pairs { Opened::Pairs } else { Opened::Melds };
         }
         if finishing {
-            let elden = was_unopened && (done.only_own_melds || self.rules.open_finish_is_elden);
-            return Ok(Some(self.finish(p, mv.discard, elden)));
+            let in_one = was_unopened && (done.only_own_melds || self.rules.open_finish_is_in_one);
+            return Ok(Some(self.finish(p, mv.discard, in_one)));
         }
         self.discard(p, mv.discard);
         Ok(None)
@@ -608,8 +608,8 @@ pub fn generate(g: &Game, p: u8, taken: Option<Tile>, cap: usize) -> Generated {
     let mut h = hand;
     meld_sets(&mut h, &g.rules, g.meld_req, cap, &mut openings);
     if g.rules.pairs_enabled {
-        let gost = g.players[p as usize].gosterge_bonus.then_some(g.gosterge);
-        let plan = pair_plan(&hand, &g.rules, gost);
+        let held_indicator = g.players[p as usize].has_indicator.then_some(g.indicator);
+        let plan = pair_plan(&hand, &g.rules, held_indicator);
         openings.extend(subsets(&plan.pairs, g.pair_req as usize, plan.pairs.len(), 512));
         if let Some(pairs) = guarded(&plan, &g.seen) {
             openings.extend(subsets(&pairs, g.pair_req as usize, pairs.len(), 512));
@@ -628,8 +628,8 @@ pub fn generate(g: &Game, p: u8, taken: Option<Tile>, cap: usize) -> Generated {
         me.swaps(&g2, &mut acts, 0, false, false);
     }
 
-    // Elden below the threshold: every tile but one in the player's own melds or pairs.
-    if let Some((melds, _, _)) = g.elden_plan(&mut Solver::new(&g.rules), p, taken) {
+    // In-one below the threshold: every tile but one in the player's own melds or pairs.
+    if let Some((melds, _, _)) = g.in_one_plan(&mut Solver::new(&g.rules), p, taken) {
         me.push(&melds.into_iter().map(Act::Meld).collect::<Vec<_>>());
     }
     Generated {

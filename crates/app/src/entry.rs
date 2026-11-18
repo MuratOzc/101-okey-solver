@@ -19,11 +19,11 @@ pub(super) fn setup_panel(ctx: Ctx, s: &State) -> impl IntoView + use<> {
         }
     };
     let now = match s.mode {
-        Mode::Gosterge => 1,
+        Mode::Indicator => 1,
         Mode::Starter => 2,
         _ => 3,
     };
-    let gtext = match s.gosterge {
+    let gtext = match s.indicator {
         Some(g) => view! { "Gösterge " {tile_view(g, None)} }.into_any(),
         None => view! { "Gösterge" }.into_any(),
     };
@@ -35,13 +35,13 @@ pub(super) fn setup_panel(ctx: Ctx, s: &State) -> impl IntoView + use<> {
     let htext = view! { {format!("Taşların · {} / {}", s.hand.len(), s.expected_hand())}  }.into_any();
     let steps = view! {
         <div class="steps">
-            {step(1, now, gtext, (now > 1).then_some(Mode::Gosterge))}
+            {step(1, now, gtext, (now > 1).then_some(Mode::Indicator))}
             {step(2, now, stext, (now > 2).then_some(Mode::Starter))}
             {step(3, now, htext, None)}
         </div>
     };
     match s.mode {
-        Mode::Gosterge => view! {
+        Mode::Indicator => view! {
             <h2>"Gösterge hangisi?"</h2>
             <p class="sub">"Ortada açık duran taşa dokun."</p>
             {steps}
@@ -134,8 +134,8 @@ pub(super) fn over_panel(ctx: Ctx, s: &State) -> impl IntoView + use<> {
                 <span class="muted">{format!("{fin} nasıl bitti?")}</span>
                 <label class="opt"><input type="checkbox" prop:checked=s.fin_okey
                     on:change=move |ev| { let v = event_target_checked(&ev); ctx.act(|s| { s.fin_okey = v; Ok(()) }) }/>"Okey atarak"</label>
-                <label class="opt"><input type="checkbox" prop:checked=s.fin_elden
-                    on:change=move |ev| { let v = event_target_checked(&ev); ctx.act(|s| { s.fin_elden = v; Ok(()) }) }/>"Elden"</label>
+                <label class="opt"><input type="checkbox" prop:checked=s.fin_in_one
+                    on:change=move |ev| { let v = event_target_checked(&ev); ctx.act(|s| { s.fin_in_one = v; Ok(()) }) }/>"Elden"</label>
             </div>
         }
     });
@@ -236,7 +236,7 @@ pub(super) fn opp_act(ctx: Ctx, s: &State) -> impl IntoView + use<> {
         view! { <div class="good">{format!("Bu tur açtı: {what}")}</div> }
     });
     let can_tap = s.can_lay_off() && (0..s.table.melds.len()).any(|i| s.meld_tappable(i));
-    let elden = pv.opened == Opened::No && !s.opened_this_turn;
+    let in_one = pv.opened == Opened::No && !s.opened_this_turn;
     let short = (!s.may_discard()).then(|| {
         view! {
             <div class="warn">{s.opening_progress()} " · açılış eksik. Kalan perleri gir; yanlışsa geri al."</div>
@@ -250,11 +250,11 @@ pub(super) fn opp_act(ctx: Ctx, s: &State) -> impl IntoView + use<> {
         {short}
         <div class="choices">
             <button class="btn light" on:click=move |_| ctx.mode(Mode::MeldEntry)>"Per / çift indirdi"</button>
-            {elden.then(|| view! {
-                <button class="btn light danger" on:click=move |_| ctx.act(|s| { let p = s.turn; s.finish(p, None); s.fin_elden = true; Ok(()) })>"Elden bitti"</button>
+            {in_one.then(|| view! {
+                <button class="btn light danger" on:click=move |_| ctx.act(|s| { let p = s.turn; s.finish(p, None); s.fin_in_one = true; Ok(()) })>"Elden bitti"</button>
             })}
         </div>
-        {(!elden).then(|| view! { <p class="muted">"Bitirdiyse: indirdiği ve işlediği taşları gir; son taşını atınca el kendiliğinden biter."</p> })}
+        {(!in_one).then(|| view! { <p class="muted">"Bitirdiyse: indirdiği ve işlediği taşları gir; son taşını atınca el kendiliğinden biter."</p> })}
         {can_tap.then(|| view! { <p class="muted">"İşlediyse ya da okey aldıysa masada o pere dokun (sarı çerçeveli)."</p> })}
     }
 }

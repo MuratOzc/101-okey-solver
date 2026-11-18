@@ -160,16 +160,16 @@ fn color_class(t: Tile) -> &'static str {
 }
 
 fn tile_view(t: Tile, okey: Option<Tile>) -> impl IntoView + use<> {
-    let sahte = t != JOKER && Some(t) == okey;
+    let fake = t != JOKER && Some(t) == okey;
     let title = if t == JOKER {
         "Okey".to_string()
-    } else if sahte {
+    } else if fake {
         format!("Sahte okey ({} yerine)", name(t))
     } else {
         name(t)
     };
     view! {
-        <span class=format!("t {}", color_class(t)) class:sahte=sahte title=title>
+        <span class=format!("t {}", color_class(t)) class:sahte=fake title=title>
             {if t == JOKER { "★".to_string() } else { num(t).to_string() }}
         </span>
     }
@@ -180,7 +180,7 @@ fn tiles_view(tiles: &[Tile], okey: Option<Tile>) -> impl IntoView + use<> {
 }
 
 fn okey_tile(s: &State) -> Option<Tile> {
-    s.gosterge.map(okey_of)
+    s.indicator.map(okey_of)
 }
 
 fn seat_name(s: &State, p: u8) -> String {
@@ -423,7 +423,7 @@ fn TopBar() -> impl IntoView {
             {move || {
                 let s = st.get();
                 let deck = (s.stage == Stage::Play).then(|| view! { <span class="chip">"Deste " <b>{s.deck_count}</b></span> });
-                let gost = s.gosterge.filter(|_| s.stage != Stage::Setup).map(|g| view! {
+                let held_indicator = s.indicator.filter(|_| s.stage != Stage::Setup).map(|g| view! {
                     <span class="chip"><span class="lbl">"Gösterge "</span>{tile_view(g, None)}<span class="lbl">" okey "</span><span class="arrow">"→"</span>{tile_view(okey_of(g), None)}</span>
                 });
                 let head = match s.stage {
@@ -435,7 +435,7 @@ fn TopBar() -> impl IntoView {
                 let game = (s.stage != Stage::Setup).then(|| view! {
                     <button class="chip link" on:click=move |_| ctx.show_settings.set(true)>{format!("El {}/{}", s.hand_no, s.hands_total)}{standing_short(&s)}</button>
                 });
-                view! { {head} {deck} {gost} {game} }
+                view! { {head} {deck} {held_indicator} {game} }
             }}
             <span class="grow"></span>
             <button class="icon" title="Geri al" on:click=move |_| ctx.undo()>"↶"</button>

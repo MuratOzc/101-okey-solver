@@ -8,8 +8,8 @@ pub struct PairPlan {
     pub rest: Vec<Tile>,
 }
 
-/// Best pairing of a hand. `gosterge` is the gösterge tile when this player may use it as a wild pair partner.
-pub fn pair_plan(hand: &Counts, rules: &Rules, gosterge: Option<Tile>) -> PairPlan {
+/// Best pairing of a hand. `indicator` is the indicator tile when this player may use it as a wild pair partner.
+pub fn pair_plan(hand: &Counts, rules: &Rules, indicator: Option<Tile>) -> PairPlan {
     let mut pairs = Vec::new();
     let mut singles: Vec<Tile> = Vec::new();
     for t in 0..NNAT as Tile {
@@ -22,13 +22,13 @@ pub fn pair_plan(hand: &Counts, rules: &Rules, gosterge: Option<Tile>) -> PairPl
     singles.sort_by_key(|&t| std::cmp::Reverse(num(t)));
     let mut jokers = hand[JOKER as usize];
 
-    if let Some(g) = gosterge.filter(|_| rules.gosterge_pair)
+    if let Some(g) = indicator.filter(|_| rules.indicator_pair)
         && let Some(pos) = singles.iter().position(|&t| t == g)
     {
         singles.remove(pos);
         if !singles.is_empty() {
             let other = singles.remove(0);
-            pairs.push(Shape::GostergePair { gosterge: g, other });
+            pairs.push(Shape::IndicatorPair { indicator: g, other });
         } else {
             singles.push(g);
         }
@@ -53,16 +53,16 @@ pub fn pair_plan(hand: &Counts, rules: &Rules, gosterge: Option<Tile>) -> PairPl
 /// such singles: nobody can then lay the twin and take the okey. None when that changes nothing.
 pub fn guarded(plan: &PairPlan, seen: &Counts) -> Option<Vec<Shape>> {
     let mut pool: Vec<Tile> = plan.rest.iter().copied().filter(|&t| t != JOKER).collect();
-    let (mut out, mut okeys, mut gost) = (Vec::new(), 0, None);
+    let (mut out, mut okeys, mut held_indicator) = (Vec::new(), 0, None);
     for &s in &plan.pairs {
         match s {
             Shape::Pair { tile, joker: true } if tile != JOKER => {
                 pool.push(tile);
                 okeys += 1;
             }
-            Shape::GostergePair { gosterge, other } => {
+            Shape::IndicatorPair { indicator, other } => {
                 pool.push(other);
-                gost = Some(gosterge);
+                held_indicator = Some(indicator);
             }
             s => out.push(s),
         }
@@ -78,9 +78,9 @@ pub fn guarded(plan: &PairPlan, seen: &Counts) -> Option<Vec<Shape>> {
             joker: true,
         });
     }
-    if let Some(gosterge) = gost {
-        out.push(Shape::GostergePair {
-            gosterge,
+    if let Some(indicator) = held_indicator {
+        out.push(Shape::IndicatorPair {
+            indicator,
             other: pool.remove(0),
         });
     }
@@ -93,11 +93,11 @@ pub fn guarded(plan: &PairPlan, seen: &Counts) -> Option<Vec<Shape>> {
 }
 
 /// How many pairs `pair_plan` would make and how many tiles it would leave, without building them.
-pub fn pair_stats(hand: &Counts, rules: &Rules, gosterge: Option<Tile>) -> (usize, usize) {
+pub fn pair_stats(hand: &Counts, rules: &Rules, indicator: Option<Tile>) -> (usize, usize) {
     let mut pairs = hand[..NNAT].iter().filter(|&&n| n == 2).count();
     let mut singles = hand[..NNAT].iter().filter(|&&n| n == 1).count();
     let mut jokers = hand[JOKER as usize] as usize;
-    if let Some(g) = gosterge.filter(|_| rules.gosterge_pair)
+    if let Some(g) = indicator.filter(|_| rules.indicator_pair)
         && hand[g as usize] == 1
         && singles >= 2
     {
