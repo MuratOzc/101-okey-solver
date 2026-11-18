@@ -123,22 +123,31 @@ pub fn on_act(before: &State, after: &State, shown: Option<Shown>) -> Result<(),
     LOG.with(|cell| {
         let mut log = cell.borrow_mut();
         if after.stage == Stage::Setup && before.stage != Stage::Setup {
-            if let Some(l) = log.take() {
+            let stored = log.as_ref().map(|l| {
+                let scores = before.hand_scores();
                 let mut all = saved();
                 all.push(Saved {
                     saved_at: js_sys::Date::new_0().to_iso_string().into(),
                     hand_no: before.hand_no,
-                    complete: before.stage == Stage::Over,
-                    scores: before.hand_scores(),
-                    start: l.start,
-                    events: l.events,
+                    complete: scores.is_some(),
+                    scores,
+                    start: l.start.clone(),
+                    events: l.events.clone(),
                     end: snapshot(before),
                 });
-                if store(SAVED_KEY, &all).is_err() {
+                store(SAVED_KEY, &all).is_ok()
+            });
+            match stored {
+                Some(true) => *log = None,
+                Some(false) => {
                     result = Err("El kaydı telefona yazılamadı: yer dolmuş olabilir. Ayarlardan kayıtları indirip silin.".to_string());
                 }
+                None => {}
             }
         } else if after.stage != Stage::Setup {
+            if before.stage == Stage::Setup {
+                *log = None;
+            }
             let l = log.get_or_insert_with(|| HandLog {
                 start: snapshot(if before.stage == Stage::Setup { after } else { before }),
                 events: vec![],
@@ -160,7 +169,9 @@ pub fn on_undo(cur: &State, prev: &State) {
         let mut log = cell.borrow_mut();
         if cur.stage == Stage::Setup && prev.stage != Stage::Setup {
             let mut all = saved();
-            if let Some(last) = all.pop() {
+            // Only the record of this very hand comes back; one that was never stored is still the live log.
+            if log.is_none() && all.last().is_some_and(|last| last.end == snapshot(prev)) {
+                let last = all.pop().expect("checked");
                 *log = Some(HandLog {
                     start: last.start,
                     events: last.events,

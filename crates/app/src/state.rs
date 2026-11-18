@@ -1,5 +1,5 @@
 use okey_engine::analysis::{Decision, Phase, PlayerView, View};
-use okey_engine::game::{Opened, Outcome};
+use okey_engine::game::{Game, Opened, Outcome};
 use okey_engine::meld::{Shape, Solver, hand_penalty};
 use okey_engine::moves::Move;
 use okey_engine::rng::Rng;
@@ -266,7 +266,7 @@ impl State {
             return false;
         }
         match self.mode {
-            Mode::Gosterge => t != JOKER,
+            Mode::Gosterge => t != JOKER && self.hand.iter().filter(|&&x| x == t).count() < 2,
             Mode::Hand | Mode::PickDraw => self.seen()[t as usize] < 2,
             Mode::Idle | Mode::MeldEntry => self.available(t) > 0,
             Mode::PairEntry { okey: true, .. } => t != JOKER && self.available(t) > 0 && self.available(JOKER) > 0,
@@ -408,6 +408,7 @@ impl State {
             self.players[p].known.push(t);
             self.players[p].hand_len = Some(self.players[p].hand_len.unwrap_or(21) + 1);
         }
+        self.penalties[p] += self.rules.take_cost(t);
         self.taken = Some(t);
         self.drawn = true;
         self.mode = Mode::Idle;
@@ -479,7 +480,8 @@ impl State {
         Ok(())
     }
 
-    fn next_turn(&mut self) {
+    /// The reward for opening with many pairs, once the opening is complete.
+    fn pay_big_pairs(&mut self) {
         let pv = self.cur();
         if self.opened_this_turn
             && !self.big_pairs_paid
@@ -488,7 +490,12 @@ impl State {
             && pv.open_value >= self.rules.big_pairs_min as i32
         {
             self.penalties[self.turn as usize] -= self.rules.big_pairs_penalty;
+            self.big_pairs_paid = true;
         }
+    }
+
+    fn next_turn(&mut self) {
+        self.pay_big_pairs();
         self.big_pairs_paid = false;
         self.turn = (self.turn + 1) % 4;
         self.drawn = false;
@@ -609,6 +616,10 @@ impl State {
         };
         let as_pair = shape.is_pair();
         match self.cur().opened {
+            _ if as_pair && !self.rules.pairs_enabled => Some("Bu kurallarda çift açılmıyor".into()),
+            Opened::Melds if !as_pair && !self.opened_this_turn && !self.rules.new_melds_after_open => {
+                Some("Bu kurallarda açtıktan sonra yeni per indirilmez".into())
+            }
             Opened::Melds if as_pair => Some("Perle açan çift indiremez (çift açana işleyebilir)".into()),
             Opened::Pairs if !as_pair && !self.rules.pair_opener_can_meld => Some("Çiftle açan seri/grup indiremez".into()),
             Opened::Pairs if as_pair && !self.opened_this_turn && self.table.pair_room(self.turn, &self.rules) == 0 => {
@@ -766,6 +777,9 @@ impl State {
     }
 
     pub fn finish(&mut self, p: u8, last: Option<Tile>) {
+        if p == self.turn {
+            self.pay_big_pairs();
+        }
         if let Some(t) = last {
             if p == 0 {
                 remove_one(&mut self.hand, t);
@@ -819,33 +833,41 @@ impl State {
         })
     }
 
-    /// Carry out an explicit move (steps, then discard) for me on the real state.
-    pub fn apply_move(&mut self, mv: &Move) -> R {
-        let view = self.view().ok_or("Sıra sende değil")?;
-        let mut g = view.determinize(&mut Rng::new(3));
-        let before = g.table.melds.len();
-        let was_unopened = self.players[0].opened == Opened::No;
-        let res = g
-            .play_move(0, mv, self.taken)
-            .map_err(|_| "Bu hamle artık geçerli değil".to_string())?;
+    /// Take my side of a simulated turn over into the real state. `before` is how many melds the
+    /// table had when the turn began.
+    fn take_over(&mut self, g: &Game, before: usize) {
         let laid: i32 = g.table.melds[before..]
             .iter()
             .filter(|m| m.owner == 0)
             .map(|m| if m.shape.is_pair() { 1 } else { m.shape.open_value(&self.rules) })
             .sum();
+        let opens = self.players[0].opened == Opened::No && g.players[0].opened != Opened::No;
         self.table = g.table.clone();
         self.hand = tiles_of(&g.players[0].hand);
         self.players[0].opened = g.players[0].opened;
-        if was_unopened && g.players[0].opened != Opened::No {
+        if opens {
             self.players[0].open_value = laid;
+            self.opened_this_turn = true;
+            // The simulated opening has already written the reward for many pairs.
+            self.big_pairs_paid = true;
         }
         for (mine, sim) in self.penalties.iter_mut().zip(&g.players) {
             *mine += sim.penalty;
         }
-        self.big_pairs_paid = true;
         self.taken = None;
         self.buffer.clear();
         self.mode = Mode::Idle;
+    }
+
+    /// Carry out an explicit move (steps, then discard) for me on the real state.
+    pub fn apply_move(&mut self, mv: &Move) -> R {
+        let view = self.view().ok_or("Sıra sende değil")?;
+        let mut g = view.determinize(&mut Rng::new(3));
+        let before = g.table.melds.len();
+        let res = g
+            .play_move(0, mv, self.taken)
+            .map_err(|_| "Bu hamle artık geçerli değil".to_string())?;
+        self.take_over(&g, before);
         match res {
             Some(Outcome::Finished(f)) => {
                 self.hand.push(f.last);
@@ -877,29 +899,10 @@ impl State {
                 let mut sv = Solver::new(&self.rules);
                 let mut g = view.determinize(&mut Rng::new(3));
                 let before = g.table.melds.len();
-                let was_unopened = self.players[0].opened == Opened::No;
                 let res = g
                     .apply_choice(&mut sv, 0, choice, self.taken)
                     .map_err(|_| "Bu hamle artık geçerli değil".to_string())?;
-                let laid: i32 = g.table.melds[before..]
-                    .iter()
-                    .filter(|m| m.owner == 0)
-                    .map(|m| if m.shape.is_pair() { 1 } else { m.shape.open_value(&self.rules) })
-                    .sum();
-                self.table = g.table.clone();
-                self.hand = tiles_of(&g.players[0].hand);
-                self.players[0].opened = g.players[0].opened;
-                if was_unopened && g.players[0].opened != Opened::No {
-                    self.players[0].open_value = laid;
-                    self.opened_this_turn = true;
-                }
-                for (mine, sim) in self.penalties.iter_mut().zip(&g.players) {
-                    *mine += sim.penalty;
-                }
-                self.big_pairs_paid = true;
-                self.taken = None;
-                self.buffer.clear();
-                self.mode = Mode::Idle;
+                self.take_over(&g, before);
                 match res {
                     Some(Outcome::Finished(f)) => {
                         self.hand.push(f.last);
@@ -995,6 +998,83 @@ mod tests {
         enter_meld(&mut s, "K9 K10 K11");
         enter_meld(&mut s, "S9 S10 S11 S12 S13");
         s.discard(3, t("Si8")).unwrap();
+    }
+
+    #[test]
+    fn seven_pairs_laid_by_hand_are_rewarded_however_the_turn_ends() {
+        let seven = "K1 K1 M2 M2 Si3 Si3 S5 S5 K8 K8 M9 M9 Si11 Si11";
+        let opened = |finishing: bool| {
+            let mut s = started();
+            s.hand = seven.split_whitespace().map(t).collect();
+            s.hand.extend(if finishing {
+                vec![t("K13")]
+            } else {
+                vec![t("K13"), t("M13"), t("S9")]
+            });
+            s.mode = Mode::Manual;
+            for pair in seven.split_whitespace().collect::<Vec<_>>().chunks(2) {
+                s.buffer = pair.iter().map(|x| t(x)).collect();
+                s.lay_meld().unwrap();
+            }
+            assert_eq!(s.players[0].open_value, 7);
+            s
+        };
+        let mut by_hand = opened(false);
+        by_hand.discard(0, t("K13")).unwrap();
+        assert_eq!(by_hand.penalties[0], -101);
+
+        let mut by_advice = opened(false);
+        by_advice.mode = Mode::Idle;
+        by_advice
+            .apply(Decision::Act {
+                choice: okey_engine::game::OpenChoice::Stay,
+                discard: Some(t("K13")),
+            })
+            .unwrap();
+        assert_eq!(by_advice.penalties[0], -101, "the advised discard must not swallow the reward");
+
+        let mut out = opened(true);
+        out.discard(0, t("K13")).unwrap();
+        assert_eq!(out.stage, Stage::Over);
+        assert_eq!(out.penalties[0], -101, "going out in the same turn keeps the reward");
+    }
+
+    #[test]
+    fn taking_from_the_side_is_charged_when_the_table_plays_it_so() {
+        let mut s = started();
+        s.rules.take_penalty_enabled = true;
+        s.discard(0, t("Si13")).unwrap();
+        for d in ["K7", "M7"] {
+            s.opp_draw().unwrap();
+            s.key(t(d)).unwrap();
+        }
+        s.take_side().unwrap();
+        assert_eq!(s.penalties, [0, 0, 0, 70], "taking a 7 costs 10 × 7");
+    }
+
+    #[test]
+    fn two_okeys_are_not_entered_as_a_pair() {
+        let mut s = started();
+        s.discard(0, t("Si13")).unwrap();
+        s.opp_draw().unwrap();
+        s.mode = Mode::MeldEntry;
+        s.buffer = vec![JOKER, JOKER];
+        assert!(s.lay_meld().is_err());
+        s.rules.pairs_enabled = false;
+        s.buffer = vec![t("K9"), t("K9")];
+        assert!(s.lay_meld().is_err(), "no pairs when the table does not play them");
+    }
+
+    #[test]
+    fn the_gosterge_cannot_be_a_tile_i_hold_twice() {
+        let mut s = State::default();
+        s.key(t("S7")).unwrap();
+        s.set_starter(1);
+        s.key(t("K1")).unwrap();
+        s.key(t("K1")).unwrap();
+        s.mode = Mode::Gosterge;
+        assert!(!s.key_enabled(t("K1")));
+        assert!(s.key_enabled(t("K2")));
     }
 
     #[test]
