@@ -489,8 +489,6 @@ ol.plan .what small { font-size: 0.733rem; }
 .state.done::before { content: "● "; color: #16a34a; }
 .state.pending::before { content: "● "; color: #f59e0b; }
 
-details.matchbox summary { cursor: pointer; font-size: 0.867rem; font-weight: 600; padding: 4px 0; }
-details.matchbox.inline { padding: 8px 10px; border-radius: 10px; background: var(--soft); }
 .matchform { display: flex; flex-direction: column; gap: 4px; padding-top: 6px; }
 label.opt { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 0.933rem; }
 label.opt.num { justify-content: space-between; }
@@ -533,14 +531,11 @@ label.opt.num { justify-content: space-between; }
 .modal-body h3 { margin: 10px 0 2px; font-size: 1rem; }
 .modal-body h4 { margin: 10px 0 0; font-size: 0.867rem; color: var(--panel-muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .modal-body .t { --w: 22px; }
-.rules-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
-.rules-head h3 { margin: 0; }
 .settings { display: flex; flex-direction: column; gap: 2px; }
 
 .disc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 5px 0; border-top: 1px solid var(--line); }
 .disc-row:first-of-type { border-top: 0; }
 .seatname { width: 70px; flex: none; font-size: 0.833rem; color: var(--panel-muted); }
-.who small.guess { opacity: 0.9; }
 .read { display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; font-size: 0.8rem; }
 .rbars { display: flex; flex-direction: column; gap: 2px; }
 .rbar { display: grid; grid-template-columns: 4.5em 1fr 3em; align-items: center; gap: 6px; color: var(--panel-muted); white-space: nowrap; }
@@ -566,8 +561,6 @@ label.opt.num { justify-content: space-between; }
   .wood { border-radius: 10px 10px 0 0; padding-bottom: calc(5px + env(safe-area-inset-bottom)); }
   .picker { border-radius: 14px 14px 0 0; padding-bottom: calc(8px + env(safe-area-inset-bottom)); }
 }
-
-.plan-note { color: var(--good); font-size: 0.8rem; font-weight: 700; }
 
 .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .score-table { display: flex; flex-direction: column; gap: 2px; }

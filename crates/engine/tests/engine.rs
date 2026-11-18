@@ -277,7 +277,7 @@ fn analyzer_runs_both_phases() {
 fn hand_report_lists_outs() {
     let v = sample_view(Phase::AfterDraw);
     let rep = hand_report(&v);
-    assert_eq!(rep.unseen_total, 106 - v.hand.len() as u32 - 1 - 1);
+    assert_eq!(total(&v.unseen()), 106 - v.hand.len() as u32 - 1 - 1);
     assert!(rep.problems.is_empty());
 }
 
@@ -482,37 +482,18 @@ fn rotating_seats_round_trips() {
 }
 
 #[test]
-fn elo_follows_head_to_head_results() {
-    use okey_engine::agent::elo_from_pairs;
-    // A beats B ten times in eleven: that is what a 400-point lead means.
-    let r = elo_from_pairs(&[vec![0.0, 100.0], vec![10.0, 0.0]], 1000.0);
-    assert!((r[0] - 1000.0).abs() < 1e-6);
-    assert!((r[1] - 600.0).abs() < 1.0, "got {}", r[1]);
-    let even = elo_from_pairs(&[vec![0.0, 50.0], vec![50.0, 0.0]], 1000.0);
-    assert!((even[1] - 1000.0).abs() < 1.0);
-}
-
-#[test]
 fn agents_play_a_full_hand_from_any_seat() {
     use okey_engine::agent::*;
     use okey_engine::policy::Policy;
     let rules = Rules::default();
     let mut sv = Solver::new(&rules);
     let mut g = Game::deal(&rules, &mut Rng::new(4), 3);
-    let mut bots: Vec<BotAgent> = (0..3)
-        .map(|i| BotAgent {
-            label: format!("bot{i}"),
-            policy: Policy::BASIC,
-        })
-        .collect();
+    let mut bots: Vec<BotAgent> = (0..3).map(|_| BotAgent { policy: Policy::BASIC }).collect();
     let mut search = SearchAgent {
-        label: "search".into(),
-        opts: Options {
-            lookahead: false,
-            ..Options::default()
-        },
+        opts: Options::default(),
         iterations: 25,
         seed: 7,
+        help: Help::default(),
     };
     let [a, b, c] = &mut bots[..] else { unreachable!() };
     let mut seats: [&mut dyn Agent; 4] = [a, b, &mut search, c];

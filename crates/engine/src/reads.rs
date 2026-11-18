@@ -15,7 +15,6 @@ pub const MAX_PAIRS: usize = 7;
 pub struct Read {
     pub seat: u8,
     pub opened: Opened,
-    pub deals: u32,
     /// Best meld opening the hand holds now: 10%, 50% and 90% points.
     pub per: [i32; 3],
     /// Share per best opening total (index = total).
@@ -180,7 +179,6 @@ pub fn read_with(view: &View, now: Option<Now>, deals: usize, seed: u64, infer: 
             Read {
                 seat: i as u8 + 1,
                 opened: view.players[i + 1].opened,
-                deals: deals as u32,
                 per_dist: dist,
                 p_melds: melds[i] / t,
                 p_pairs: by_pairs[i] / t,

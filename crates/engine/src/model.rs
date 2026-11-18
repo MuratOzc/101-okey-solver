@@ -23,7 +23,7 @@ pub fn turns(g: &Game, sv: &mut Solver, p: u8, taken: Option<Tile>, discards: us
     let pi = p as usize;
     let mut out = Vec::new();
     let mut seen: Vec<(Counts, Vec<(u8, Shape)>, i32, bool)> = Vec::new();
-    for choice in Game::plan_choices(g.players[pi].opened, true) {
+    for choice in Game::plan_choices(g.players[pi].opened) {
         let mut a = g.clone();
         let Ok(end) = a.apply_choice(sv, p, choice, taken) else { continue };
         let key = (
@@ -197,15 +197,10 @@ pub fn play_out_with(g: &mut Game, sv: &mut Solver, net: &Net, model: [bool; 4])
 }
 
 pub struct ModelAgent {
-    pub label: String,
     pub net: Arc<Net>,
 }
 
 impl Agent for ModelAgent {
-    fn name(&self) -> String {
-        self.label.clone()
-    }
-
     fn turn(&mut self, g: &mut Game, sv: &mut Solver, first: bool) -> Option<Outcome> {
         model_turn(g, sv, &self.net, first)
     }

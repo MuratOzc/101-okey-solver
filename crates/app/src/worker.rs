@@ -1,4 +1,4 @@
-use okey_engine::analysis::{Analyzer, Field, Options, Packed, View};
+use okey_engine::analysis::{Analyzer, Field, Packed, View};
 use okey_engine::net::Net;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -14,8 +14,6 @@ enum Req {
         generation: u32,
         view: View,
         seed: u64,
-        #[serde(default)]
-        options: Options,
         #[serde(default)]
         model: bool,
         field: Field,
@@ -110,14 +108,13 @@ fn main() {
                 generation,
                 view,
                 seed,
-                options,
                 model,
                 field,
-            }) => match Analyzer::with_options(view, seed, options) {
+            }) => match Analyzer::new(view, seed) {
                 Ok(mut an) => {
                     for net in [&NET, &TEAM_NET] {
                         if model && let Some(net) = net.with(|net| net.clone()) {
-                            an.use_model(net, 0.0, true);
+                            an.use_model(net);
                         }
                     }
                     an.set_field(&field);

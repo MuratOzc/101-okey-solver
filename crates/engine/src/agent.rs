@@ -1,5 +1,5 @@
 //! A common seat-at-the-table interface, so that hand-written bots, the search-based player
-//! and (later) a trained model can all be matched against each other and rated.
+//! and a trained model can all be matched against each other.
 
 use crate::analysis::{Analyzer, Decision, Options, Phase, public_view};
 use crate::game::{Game, Outcome};
@@ -7,13 +7,10 @@ use crate::meld::Solver;
 use crate::moves::Move;
 use crate::net::Net;
 use crate::policy::Policy;
-use crate::stakes::erf;
 use crate::tile::{Tile, tiles_of};
 use std::sync::Arc;
 
 pub trait Agent {
-    fn name(&self) -> String;
-
     /// Play one whole turn for `g.current`: draw (unless `first`, the starter's opening turn),
     /// lay whatever it wants, discard. Must leave `g.current` on the next player unless the hand ended.
     /// An agent may only use what that seat can see: its own hand and the public table.
@@ -22,123 +19,72 @@ pub trait Agent {
 
 /// A heuristic bot.
 pub struct BotAgent {
-    pub label: String,
     pub policy: Policy,
 }
 
 impl Agent for BotAgent {
-    fn name(&self) -> String {
-        self.label.clone()
-    }
-
     fn turn(&mut self, g: &mut Game, sv: &mut Solver, first: bool) -> Option<Outcome> {
         g.policy[g.current as usize] = self.policy;
         if first { g.starter_turn(sv) } else { g.bot_turn(sv) }
     }
 }
 
+/// Runs `play` with the seats turned so that the player on turn sits at seat 0.
+fn at_seat_0(g: &mut Game, play: impl FnOnce(&mut Game) -> Option<Outcome>) -> Option<Outcome> {
+    let seat = g.current;
+    let mut mine = g.rotated(seat);
+    let out = play(&mut mine);
+    *g = mine.rotated((4 - seat) % 4);
+    out.map(|o| match o {
+        Outcome::Finished(mut f) => {
+            f.player = (f.player + seat) % 4;
+            Outcome::Finished(f)
+        }
+        other => other,
+    })
+}
+
 /// The Monte Carlo search player, thinking for a fixed number of simulated deals per decision.
 pub struct SearchAgent {
-    pub label: String,
-    pub opts: Options,
-    pub iterations: usize,
-    pub seed: u64,
-}
-
-impl Agent for SearchAgent {
-    fn name(&self) -> String {
-        self.label.clone()
-    }
-
-    fn turn(&mut self, g: &mut Game, sv: &mut Solver, first: bool) -> Option<Outcome> {
-        let seat = g.current;
-        let mut mine = g.rotated(seat);
-        self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        let out = search_turn(&mut mine, sv, first, self.iterations, self.seed, &self.opts);
-        *g = mine.rotated((4 - seat) % 4);
-        out.map(|o| match o {
-            Outcome::Finished(mut f) => {
-                f.player = (f.player + seat) % 4;
-                Outcome::Finished(f)
-            }
-            other => other,
-        })
-    }
-}
-
-pub struct HelpedAgent {
-    pub label: String,
     pub opts: Options,
     pub iterations: usize,
     pub seed: u64,
     pub help: Help,
 }
 
-impl Agent for HelpedAgent {
-    fn name(&self) -> String {
-        self.label.clone()
-    }
-
+impl Agent for SearchAgent {
     fn turn(&mut self, g: &mut Game, sv: &mut Solver, first: bool) -> Option<Outcome> {
-        let seat = g.current;
-        let mut mine = g.rotated(seat);
         self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        let out = search_turn_with(&mut mine, sv, first, self.iterations, self.seed, &self.opts, &self.help);
-        *g = mine.rotated((4 - seat) % 4);
-        out.map(|o| match o {
-            Outcome::Finished(mut f) => {
-                f.player = (f.player + seat) % 4;
-                Outcome::Finished(f)
-            }
-            other => other,
-        })
+        at_seat_0(g, |mine| search_turn(mine, sv, first, self.iterations, self.seed, &self.opts, &self.help))
     }
 }
 
 /// Not a legal player: it sees every hand and the order of the deck, and tries each of its plans
 /// against that truth. Its rating is the ceiling the luck of the deal leaves room for.
 pub struct OracleAgent {
-    pub label: String,
     pub policy: Policy,
     /// How many of its own later turns are searched the same way inside each trial.
     pub depth: u8,
 }
 
 impl Agent for OracleAgent {
-    fn name(&self) -> String {
-        self.label.clone()
-    }
-
     fn turn(&mut self, g: &mut Game, sv: &mut Solver, first: bool) -> Option<Outcome> {
-        let seat = g.current;
-        let mut mine = g.rotated(seat);
-        mine.policy[0] = self.policy;
-        mine.table.new_turn();
-        let mut taken = None;
-        let mut out = None;
-        if !first && mine.deck.is_empty() {
+        if !first && g.deck.is_empty() {
             return Some(Outcome::DeckOut);
         }
-        if !first {
-            if mine.bot_wants_take(sv, 0) {
-                taken = Some(mine.take_top(0));
-            } else {
-                match mine.deck.pop() {
-                    Some(t) => mine.players[0].hand[t as usize] += 1,
-                    None => out = Some(Outcome::DeckOut),
+        at_seat_0(g, |mine| {
+            mine.policy[0] = self.policy;
+            mine.table.new_turn();
+            let mut taken = None;
+            if !first {
+                if mine.bot_wants_take(sv, 0) {
+                    taken = Some(mine.take_top(0));
+                } else {
+                    let t = mine.deck.pop().expect("checked");
+                    mine.players[0].hand[t as usize] += 1;
                 }
             }
-        }
-        if out.is_none() {
-            out = mine.lookahead_act(sv, 0, taken, self.depth);
-        }
-        *g = mine.rotated((4 - seat) % 4);
-        out.map(|o| match o {
-            Outcome::Finished(mut f) => {
-                f.player = (f.player + seat) % 4;
-                Outcome::Finished(f)
-            }
-            other => other,
+            mine.lookahead_act(sv, 0, taken, self.depth)
         })
     }
 }
@@ -161,8 +107,8 @@ fn decide(
     let Ok(mut a) = Analyzer::with_options(view, seed, *opts) else {
         return (None, None);
     };
-    if let Some((net, weight, own_turns)) = &help.model {
-        a.use_model(net.clone(), *weight, *own_turns);
+    if let Some(net) = &help.model {
+        a.use_model(net.clone());
     }
     let mut done = 0;
     loop {
@@ -178,20 +124,16 @@ fn decide(
     }
 }
 
-/// One whole turn for seat 0 of `g`, chosen by search. Falls back to the bot if the search has no answer.
-pub fn search_turn(g: &mut Game, sv: &mut Solver, first: bool, iterations: usize, seed: u64, opts: &Options) -> Option<Outcome> {
-    search_turn_with(g, sv, first, iterations, seed, opts, &Help::default())
-}
-
 #[derive(Clone, Default)]
 pub struct Help {
     /// The seats whose hands it is told, though never the order of the deck. Not a legal player.
     pub peek: [bool; 4],
-    /// (network, how many simulated deals its opinion of a move counts for, whether it plays my later turns)
-    pub model: Option<(Arc<Net>, f64, bool)>,
+    /// The network that plays the searcher's later turns inside its simulations.
+    pub model: Option<Arc<Net>>,
 }
 
-pub fn search_turn_with(
+/// One whole turn for seat 0 of `g`, chosen by search. Falls back to the bot if the search has no answer.
+pub fn search_turn(
     g: &mut Game,
     sv: &mut Solver,
     first: bool,
@@ -253,54 +195,4 @@ pub fn play_hand(g: &mut Game, sv: &mut Solver, seats: &mut [&mut dyn Agent; 4])
         first = false;
     };
     g.scores(&out)
-}
-
-/// Ratings on the Elo scale from pairwise results, by the Bradley–Terry model:
-/// a 400-point lead means winning a head-to-head comparison ten times in eleven.
-/// `wins[i][j]` counts the hands in which i scored better than j (a tie is half each).
-/// The first player is pinned at `anchor`.
-pub fn elo_from_pairs(wins: &[Vec<f64>], anchor: f64) -> Vec<f64> {
-    let n = wins.len();
-    let mut strength = vec![1.0f64; n];
-    for _ in 0..2000 {
-        let mut next = strength.clone();
-        for i in 0..n {
-            let won: f64 = (0..n).map(|j| wins[i][j]).sum();
-            let denom: f64 = (0..n)
-                .filter(|&j| j != i)
-                .map(|j| (wins[i][j] + wins[j][i]) / (strength[i] + strength[j]))
-                .sum();
-            if denom > 0.0 {
-                // A player with no wins at all would sink to minus infinity; half a win keeps it finite.
-                next[i] = won.max(0.5) / denom;
-            }
-        }
-        let scale = next[0];
-        next.iter_mut().for_each(|s| *s /= scale);
-        strength = next;
-    }
-    strength.iter().map(|s| anchor + 400.0 * s.log10()).collect()
-}
-
-/// The chance that A out-scores B over a whole game of `hands` hands, from per-hand score
-/// differences (A minus B; lower is better) seen when both sat at the same table.
-/// Hands are independent deals, so the game total is close to normal.
-pub fn game_win_chance(diffs: &[f32], hands: u32) -> f64 {
-    let n = diffs.len() as f64;
-    if n < 2.0 {
-        return 0.5;
-    }
-    let mean = diffs.iter().map(|&d| d as f64).sum::<f64>() / n;
-    let var = diffs.iter().map(|&d| (d as f64 - mean).powi(2)).sum::<f64>() / (n - 1.0);
-    if var <= 0.0 {
-        return if mean < 0.0 {
-            1.0
-        } else if mean > 0.0 {
-            0.0
-        } else {
-            0.5
-        };
-    }
-    let z = -mean * (hands as f64).sqrt() / var.sqrt();
-    0.5 * (1.0 + erf(z / std::f64::consts::SQRT_2))
 }

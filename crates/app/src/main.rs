@@ -4,8 +4,7 @@ mod state;
 
 use leptos::prelude::*;
 use okey_engine::analysis::{
-    Analyzer, CandReport, Decision, Field, HandReport, Options, Packed, Phase, Report, View, describe, describe_move, hand_report,
-    model_fits,
+    Analyzer, CandReport, Decision, Field, HandReport, Packed, Phase, Report, View, describe, describe_move, hand_report, model_fits,
 };
 use okey_engine::game::{Opened, Step};
 use okey_engine::meld::{Shape, pos_tile};
@@ -49,7 +48,6 @@ enum Req<'a> {
         generation: u32,
         view: &'a okey_engine::analysis::View,
         seed: u64,
-        options: Options,
         model: bool,
         field: &'a Field,
     },
@@ -142,7 +140,6 @@ fn start_msg(boss: &Boss, field: &Field, stream: usize) -> Option<String> {
         generation: boss.generation,
         view: &boss.view,
         seed: boss.base.wrapping_add((stream as u64 + 1) * 0x9E37_79B9),
-        options: Options::default(),
         model: boss.model,
         field,
     })
@@ -152,7 +149,7 @@ fn start_msg(boss: &Boss, field: &Field, stream: usize) -> Option<String> {
 fn start_all(generation: u32, view: &okey_engine::analysis::View, model: bool) -> Result<(), String> {
     let now = js_sys::Date::now();
     let base = now as u64;
-    let mut an = Analyzer::with_options(view.clone(), base, Options::default())?;
+    let mut an = Analyzer::new(view.clone(), base)?;
     let field = an.field();
     let boss = Boss {
         generation,
@@ -660,7 +657,7 @@ fn Seats() -> impl IntoView {
                                 <small class="cnt">{format!("{count} taş")}</small>
                                 <small class="extra">
                                     {badge.map(|b| view! { <span class="open">{b}</span> })}
-                                    {guess.into_iter().map(|g| view! { <span class="gl" title="Tahmini eli">{g}</span> }).collect_view()}
+                                    {guess.into_iter().map(|g| view! { <span title="Tahmini eli">{g}</span> }).collect_view()}
                                 </small>
                             </span>
                             <span class="last" class:take=takeable title="Son attığı">

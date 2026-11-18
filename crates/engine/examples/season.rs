@@ -66,22 +66,16 @@ fn main() {
                                         behind: [tot[0] - tot[1], tot[0] - tot[2], tot[0] - tot[3]],
                                     });
                                 }
-                                let mut hero = HelpedAgent {
-                                    label: String::new(),
+                                let mut hero = SearchAgent {
                                     opts: Options::default(),
                                     iterations,
                                     seed: m * 64 + h,
                                     help: Help {
                                         peek: [false; 4],
-                                        model: Some((net.clone(), 0.0, true)),
+                                        model: Some(net.clone()),
                                     },
                                 };
-                                let mut bots: Vec<BotAgent> = (0..3)
-                                    .map(|_| BotAgent {
-                                        label: String::new(),
-                                        policy: Policy::FINISHER,
-                                    })
-                                    .collect();
+                                let mut bots: Vec<BotAgent> = (0..3).map(|_| BotAgent { policy: Policy::FINISHER }).collect();
                                 let [a, b, c] = &mut bots[..] else { unreachable!() };
                                 let s = play_hand(&mut g, &mut sv, &mut [&mut hero, a, b, c]);
                                 for (t, x) in tot.iter_mut().zip(s) {

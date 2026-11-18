@@ -1,7 +1,6 @@
-use crate::features::{Moment, encode};
 use crate::game::*;
 use crate::meld::{Shape, Solver};
-use crate::model::{model_act, play_out_to, play_out_with, written3};
+use crate::model::{model_act, play_out_to, play_out_with};
 use crate::moves::{Act, Move, generate};
 use crate::net::Net;
 use crate::pairs::pair_plan;
@@ -225,14 +224,10 @@ pub struct CandReport {
     pub label: String,
     /// Expected score gap: mine minus the opponents' average (team minus team when partnered). Lower is better.
     pub mean: f64,
-    /// Expected own (team) score for this hand.
-    pub own: f64,
     pub diff_se: f64,
     pub n: usize,
     pub p_finish: f64,
     pub p_open: f64,
-    pub p_opp_finish: f64,
-    pub p_deckout: f64,
     /// How often the next player takes the tile this move discards.
     pub p_next_takes: f64,
     /// For each seat counted from me: how often it draws the deck's last tile.
@@ -284,18 +279,16 @@ pub struct Field {
     pub cands: Vec<Decision>,
 }
 
-/// One candidate's result on one deal: gap, tie, own, chance of winning per million, flags.
-pub type Packed = [i32; 5];
+/// One candidate's result on one deal: gap, tie, chance of winning per million, flags.
+pub type Packed = [i32; 4];
 
 fn pack(r: &RolloutResult) -> Packed {
     let flags = r.finish as i32
         | (r.opened as i32) << 1
-        | (r.opp_finish as i32) << 2
-        | (r.deckout as i32) << 3
-        | (r.next_takes as i32) << 4
-        | r.last_draw.map_or(0, |p| p as i32 + 1) << 5
-        | (r.whole as i32) << 8;
-    [r.gap, r.tie, r.own, (r.win as f64 * 1e6).round() as i32, flags]
+        | (r.next_takes as i32) << 2
+        | (r.whole as i32) << 3
+        | r.last_draw.map_or(0, |p| p as i32 + 1) << 4;
+    [r.gap, r.tie, (r.win as f64 * 1e6).round() as i32, flags]
 }
 
 struct Cand {
@@ -305,18 +298,13 @@ struct Cand {
     /// Summed score gap, used only to order candidates whose `scores` are level.
     tie: i64,
     win: f64,
-    own: i64,
     finish: u32,
     open: u32,
-    opp_finish: u32,
-    deckout: u32,
     next_takes: u32,
     last_draw: [u32; 4],
     /// Deals played to the end of the hand; the counts above come from these alone.
     whole: u32,
     alive: bool,
-    prior: Option<f32>,
-    rated: bool,
 }
 
 pub struct Analyzer {
@@ -334,8 +322,6 @@ pub struct Analyzer {
     /// How many of my later turns each simulation searches (0 = the bot plays them).
     depth: u8,
     net: Option<Arc<Net>>,
-    prior_weight: f64,
-    own_turns: bool,
     version: u32,
     sent: std::collections::VecDeque<Field>,
     work: Vec<(Decision, Option<Move>)>,
@@ -377,17 +363,12 @@ fn blank(decision: Decision, mv: Option<Move>) -> Cand {
         scores: vec![],
         tie: 0,
         win: 0.0,
-        own: 0,
         finish: 0,
         open: 0,
-        opp_finish: 0,
-        deckout: 0,
         next_takes: 0,
         last_draw: [0; 4],
         whole: 0,
         alive: true,
-        prior: None,
-        rated: false,
     }
 }
 
@@ -395,16 +376,12 @@ fn blank(decision: Decision, mv: Option<Move>) -> Cand {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Options {
-    /// Try alternative openings, holding melds back and taking opponents' okeys, not just "lay everything".
-    pub rich_moves: bool,
     /// How every simulated player (me in later turns, and the opponents) is assumed to play.
     pub policy: Policy,
     pub max_discards: usize,
     /// Deal the hidden tiles so that they fit what the opponents have done so far,
     /// instead of uniformly at random.
     pub infer: bool,
-    /// Consider every legal move (all arrangements, lay-offs, okey swaps, discards) instead of a few plans.
-    pub exhaustive: bool,
     /// Once few candidates remain, simulate my own later turns by search instead of by the bot.
     /// Off by default: in the arena it cost ten times the work and changed nothing (±8 points/hand).
     pub lookahead: bool,
@@ -427,11 +404,9 @@ struct Ai<'a> {
 impl Default for Options {
     fn default() -> Self {
         Options {
-            rich_moves: true,
             policy: Policy::HOLDER,
             max_discards: 12,
             infer: true,
-            exhaustive: true,
             lookahead: false,
             horizon: 1,
             build: false,
@@ -669,8 +644,6 @@ impl Analyzer {
             truncated: false,
             depth: 0,
             net: None,
-            prior_weight: 0.0,
-            own_turns: false,
             version: 0,
             sent: Default::default(),
             work: vec![],
@@ -687,7 +660,7 @@ impl Analyzer {
         };
         if decisive(&me.view) && me.view.phase == Phase::AfterDraw {
             me.cands = candidates(&me.view, &mut sv, &plans).into_iter().map(|d| blank(d, None)).collect();
-        } else if opts.exhaustive && me.view.phase == Phase::AfterDraw {
+        } else if me.view.phase == Phase::AfterDraw {
             me.enumerate(&mut sv);
             // A hand with more arrangements than the generator's cap cannot be screened in any useful time.
             if me.truncated {
@@ -706,49 +679,10 @@ impl Analyzer {
         Ok(me)
     }
 
-    /// The network's opinion of a candidate counts like `weight` simulated deals; with `own_turns`
-    /// it also plays my later turns inside every simulation.
-    pub fn use_model(&mut self, net: Arc<Net>, weight: f64, own_turns: bool) {
-        if !model_fits(&self.view, net.partners) {
-            return;
-        }
-        self.net = Some(net);
-        // The network's own opinion is in points, which a chance of winning the match cannot be mixed with.
-        self.prior_weight = if self.view.stakes.is_some() { 0.0 } else { weight };
-        self.own_turns = own_turns;
-        self.rate();
-    }
-
-    fn rate(&mut self) {
-        let Some(net) = self.net.clone() else { return };
-        if self.prior_weight <= 0.0 || self.cands.iter().all(|c| c.rated) {
-            return;
-        }
-        let mut base = self.view.determinize(&mut Rng::new(1));
-        base.policy = [self.opts.policy; 4];
-        let taken = self.view.taken;
-        for c in self.cands.iter_mut().filter(|c| !c.rated) {
-            c.rated = true;
-            let mut g = base.clone();
-            let sv = &mut self.sv;
-            c.prior = match (&c.mv, c.decision) {
-                (Some(mv), _) => g.play_move(0, mv, taken).ok().map(|end| settle(&mut g, sv, &net, end)),
-                (None, Decision::Draw) => Some(written3(&g, 0) as f32 + net.value(&encode(&g, sv, 0, Moment::Draw, net.full()))),
-                (None, Decision::Take) if g.top.is_some() => {
-                    let t = g.take_top(0);
-                    Some(written3(&g, 0) as f32 + net.value(&encode(&g, sv, 0, Moment::Take(t), net.full())))
-                }
-                (None, Decision::Act { choice, discard }) => g.apply_choice(sv, 0, choice, taken).ok().map(|end| {
-                    if end.is_none() {
-                        let t = discard
-                            .filter(|&t| g.players[0].hand[t as usize] > 0)
-                            .unwrap_or_else(|| g.bot_discard(sv, 0));
-                        g.discard(0, t);
-                    }
-                    settle(&mut g, sv, &net, end)
-                }),
-                _ => None,
-            };
+    /// Let the network play my later turns inside every simulation, where it was trained for the rules.
+    pub fn use_model(&mut self, net: Arc<Net>) {
+        if model_fits(&self.view, net.partners) {
+            self.net = Some(net);
         }
     }
 
@@ -805,7 +739,6 @@ impl Analyzer {
             .collect();
         self.screening = false;
         self.version += 1;
-        self.rate();
     }
 
     /// What has to be played now. Results are accepted for this and the few fields before it.
@@ -851,7 +784,7 @@ impl Analyzer {
     pub fn evaluate(&mut self, seed: u64) -> Vec<Packed> {
         // Every candidate faces the same deal, so the deal (and the inference behind it) is made once.
         let deal = self.view.sample(&mut Rng::new(seed), &mut self.sv, &self.opts);
-        let net = self.net.clone().filter(|_| self.own_turns);
+        let net = self.net.clone();
         let whole = Rng::new(seed ^ 0x51ED_270B_3F4A_91C7).below(WHOLE_EVERY) == 0;
         let ai = net.as_deref().map(|net| Ai {
             net,
@@ -890,20 +823,17 @@ impl Analyzer {
             let Some(at) = at else { return };
             self.iter += 1;
             for (c, i) in self.cands.iter_mut().filter(|c| c.alive).zip(at) {
-                let [gap, tie, own, win, flags] = results[i];
+                let [gap, tie, win, flags] = results[i];
                 c.scores.push(gap);
                 c.tie += tie as i64;
                 c.win += win as f64 / 1e6;
-                c.next_takes += (flags >> 4 & 1) as u32;
-                if flags >> 8 & 1 == 1 {
+                c.next_takes += (flags >> 2 & 1) as u32;
+                if flags >> 3 & 1 == 1 {
                     c.whole += 1;
-                    c.own += own as i64;
                     c.finish += (flags & 1) as u32;
                     c.open += (flags >> 1 & 1) as u32;
-                    c.opp_finish += (flags >> 2 & 1) as u32;
-                    c.deckout += (flags >> 3 & 1) as u32;
-                    if flags >> 5 & 7 > 0 {
-                        c.last_draw[(flags >> 5 & 7) as usize - 1] += 1;
+                    if flags >> 4 > 0 {
+                        c.last_draw[(flags >> 4) as usize - 1] += 1;
                     }
                 }
             }
@@ -918,7 +848,6 @@ impl Analyzer {
     }
 
     pub fn step(&mut self, iterations: usize) {
-        self.rate();
         for _ in 0..iterations {
             if self.work_version != Some(self.version) {
                 let field = self.field();
@@ -960,8 +889,7 @@ impl Analyzer {
         self.version += 1;
         let field = self.cands.len();
         let keep = (if field > 500 { field / 3 } else { field / 2 }).max(SCREEN_KEEP);
-        let w = self.prior_weight;
-        self.cands.sort_by(|a, b| merit(a, b, w));
+        self.cands.sort_by(merit);
         let leader = self.cands[0].scores.clone();
         // Rank by how good each could still be, so a strong move that drew a few bad deals survives the cut.
         let mut ranked: Vec<(f64, Cand)> = self
@@ -997,7 +925,7 @@ impl Analyzer {
     fn best_alive(&self) -> Option<usize> {
         (0..self.cands.len())
             .filter(|&i| self.cands[i].alive)
-            .min_by(|&a, &b| merit(&self.cands[a], &self.cands[b], self.prior_weight))
+            .min_by(|&a, &b| merit(&self.cands[a], &self.cands[b]))
     }
 
     fn prune(&mut self) {
@@ -1010,21 +938,12 @@ impl Analyzer {
             return;
         }
         let best = self.cands[b].scores.clone();
-        let (best_prior, w) = (self.cands[b].prior, self.prior_weight);
         let margin = self.margin(b);
         for (i, c) in self.cands.iter_mut().enumerate() {
             if i == b || !c.alive {
                 continue;
             }
-            let (mut d, mut se) = paired(&c.scores, &best);
-            if let (Some(p), Some(q)) = (c.prior, best_prior)
-                && w > 0.0
-                && se.is_finite()
-            {
-                let n = c.scores.len().min(best.len()) as f64;
-                d = (n * d + w * (p - q) as f64) / (n + w);
-                se *= (n / (n + w)).sqrt();
-            }
+            let (d, se) = paired(&c.scores, &best);
             if d > 3.5 * se + margin {
                 c.alive = false;
                 self.version += 1;
@@ -1069,7 +988,7 @@ impl Analyzer {
         let mut order: Vec<usize> = (0..self.cands.len()).collect();
         order.sort_by(|&a, &b| {
             let (x, y) = (&self.cands[a], &self.cands[b]);
-            y.alive.cmp(&x.alive).then(merit(x, y, self.prior_weight))
+            y.alive.cmp(&x.alive).then(merit(x, y))
         });
         let cands = order
             .into_iter()
@@ -1085,15 +1004,12 @@ impl Analyzer {
                         Some(mv) => move_label(mv, &self.view.rules),
                         None => label(&c.decision),
                     },
-                    mean: est(c, self.prior_weight) / unit,
+                    mean: mean(&c.scores) / unit,
                     gap: c.tie as f64 / n / GAP_SCALE,
-                    own: c.own as f64 / whole,
                     diff_se: paired(&c.scores, &best_scores).1 / unit,
                     n: c.scores.len(),
                     p_finish: c.finish as f64 / whole,
                     p_open: c.open as f64 / whole,
-                    p_opp_finish: c.opp_finish as f64 / whole,
-                    p_deckout: c.deckout as f64 / whole,
                     p_next_takes: c.next_takes as f64 / n,
                     p_last_draw: c.last_draw.map(|k| k as f64 / whole),
                     whole: c.whole as usize,
@@ -1110,7 +1026,7 @@ impl Analyzer {
             screening: self.screening,
             truncated: self.truncated,
             deep: self.depth > 0,
-            model: self.net.is_some() && self.own_turns,
+            model: self.net.is_some(),
             settled,
             doubt: doubt.max(0.0) / unit,
             close,
@@ -1167,26 +1083,9 @@ pub fn move_label(mv: &Move, rules: &Rules) -> String {
 }
 
 /// Candidates in order of merit: mean cost first, mean score gap between equals.
-fn merit(a: &Cand, b: &Cand, weight: f64) -> std::cmp::Ordering {
+fn merit(a: &Cand, b: &Cand) -> std::cmp::Ordering {
     let tie = |c: &Cand| c.tie as f64 / c.scores.len().max(1) as f64;
-    est(a, weight).total_cmp(&est(b, weight)).then(tie(a).total_cmp(&tie(b)))
-}
-
-fn est(c: &Cand, weight: f64) -> f64 {
-    match c.prior {
-        Some(p) if weight > 0.0 => (c.scores.iter().map(|&x| x as f64).sum::<f64>() + weight * p as f64) / (c.scores.len() as f64 + weight),
-        _ => mean(&c.scores),
-    }
-}
-
-fn settle(g: &mut Game, sv: &mut Solver, net: &Net, end: Option<Outcome>) -> f32 {
-    match end {
-        Some(end) => g.gap3(&g.scores(&end), 0) as f32,
-        None => {
-            g.current = 1;
-            written3(g, 0) as f32 + net.value(&encode(g, sv, 0, Moment::After, net.full()))
-        }
-    }
+    mean(&a.scores).total_cmp(&mean(&b.scores)).then(tie(a).total_cmp(&tie(b)))
 }
 
 fn mean(v: &[i32]) -> f64 {
@@ -1213,29 +1112,21 @@ const GAP_SCALE: f64 = 3.0;
 /// The chance of losing the match is stored times this, fine enough for a match that is nearly lost.
 const MATCH_SCALE: f64 = 3_000_000.0;
 
-pub struct RolloutResult {
+struct RolloutResult {
     /// GAP_SCALE × (my score − opponents' average); team against team when partnered.
     /// With a known match situation: GAP_SCALE × the chance of losing the match, per mille.
-    pub gap: i32,
+    gap: i32,
     /// Chance of winning the match in this outcome (0 when no match situation is known).
-    pub win: f32,
+    win: f32,
     /// The plain score gap, for ordering outcomes that are level on `gap`.
-    pub tie: i32,
-    pub own: i32,
-    pub finish: bool,
-    pub opened: bool,
-    pub opp_finish: bool,
-    pub deckout: bool,
-    pub next_takes: bool,
+    tie: i32,
+    finish: bool,
+    opened: bool,
+    next_takes: bool,
     /// Who drew the deck's last tile, counted from me.
-    pub last_draw: Option<u8>,
+    last_draw: Option<u8>,
     /// The hand was played to its end, so everything but `gap` and `tie` describes a real ending.
-    pub whole: bool,
-}
-
-pub fn rollout(view: &View, sv: &mut Solver, d: Decision, seed: u64, opts: &Options, depth: u8) -> RolloutResult {
-    let g = view.sample(&mut Rng::new(seed), sv, opts);
-    play_decision_on(view, g, sv, d, depth, None)
+    whole: bool,
 }
 
 fn play_decision_on(view: &View, mut g: Game, sv: &mut Solver, d: Decision, depth: u8, ai: Option<Ai>) -> RolloutResult {
@@ -1287,12 +1178,6 @@ fn play_decision_on(view: &View, mut g: Game, sv: &mut Solver, d: Decision, dept
     conclude(view, g, out, sv, rest, ai)
 }
 
-/// One simulated hand after seat 0 plays an explicit move.
-pub fn rollout_move(view: &View, sv: &mut Solver, mv: &Move, seed: u64, opts: &Options, depth: u8) -> RolloutResult {
-    let g = view.sample(&mut Rng::new(seed), sv, opts);
-    play_move_on(view, g, sv, mv, depth, None)
-}
-
 fn play_move_on(view: &View, mut g: Game, sv: &mut Solver, mv: &Move, depth: u8, ai: Option<Ai>) -> RolloutResult {
     let out = match g.play_move(0, mv, view.taken) {
         Ok(o) => o,
@@ -1327,11 +1212,8 @@ fn conclude(view: &View, mut g: Game, out: Option<Outcome>, sv: &mut Solver, dep
                             gap,
                             win: 0.0,
                             tie: gap,
-                            own: 0,
                             finish: false,
                             opened: false,
-                            opp_finish: false,
-                            deckout: false,
                             next_takes,
                             last_draw: None,
                             whole: false,
@@ -1346,25 +1228,17 @@ fn conclude(view: &View, mut g: Game, out: Option<Outcome>, sv: &mut Solver, dep
         }
     };
     let s = g.scores(&o);
-    let team = view.rules.partners;
-    let own = if team { s[0] + s[2] } else { s[0] };
     let tie = expected.unwrap_or_else(|| g.gap3(&s, 0));
-    let loss = g.stakes.map(|st| st.loss(&s, team));
+    let loss = g.stakes.map(|st| st.loss(&s, view.rules.partners));
     let gap = loss.map_or(tie, |l| (l * MATCH_SCALE).round() as i32);
     let win = loss.map_or(0.0, |l| 1.0 - l as f32);
-    let (finish, opp_finish) = match o {
-        Outcome::Finished(f) => (f.player == 0, !(f.player == 0 || (team && f.player == 2))),
-        Outcome::DeckOut => (false, false),
-    };
+    let finish = matches!(o, Outcome::Finished(f) if f.player == 0);
     RolloutResult {
         gap,
         win,
         tie,
-        own,
         finish,
-        opened: g.players[0].opened != Opened::No || matches!(o, Outcome::Finished(f) if f.player == 0),
-        opp_finish,
-        deckout: o == Outcome::DeckOut,
+        opened: finish || g.players[0].opened != Opened::No,
         next_takes,
         last_draw: g.last_draw,
         // Hands that happen to end inside the horizon must not be counted more often than the rest.
@@ -1414,7 +1288,7 @@ pub fn candidates(view: &View, sv: &mut Solver, opts: &Options) -> Vec<Decision>
         }
         Phase::AfterDraw => {
             let mut seen_positions: Vec<String> = Vec::new();
-            for choice in Game::plan_choices(g.players[0].opened, opts.rich_moves) {
+            for choice in Game::plan_choices(g.players[0].opened) {
                 let mut g2 = g.clone();
                 let Ok(res) = g2.apply_choice(sv, 0, choice, view.taken) else {
                     continue;
@@ -1454,10 +1328,7 @@ pub struct HandReport {
     pub pair_req: u8,
     pub open_value: i32,
     pub melds: Vec<Vec<Tile>>,
-    pub rest: Vec<Tile>,
     pub pairs: u8,
-    pub unseen: Vec<u8>,
-    pub unseen_total: u32,
     pub outs: Vec<Out>,
     pub problems: Vec<String>,
 }
@@ -1496,10 +1367,7 @@ pub fn hand_report(view: &View) -> HandReport {
         pair_req,
         open_value,
         melds: plan.melds.iter().map(Shape::tiles).collect(),
-        rest: plan.rest.clone(),
         pairs,
-        unseen: unseen.to_vec(),
-        unseen_total: total(&unseen),
         outs,
         problems: view.problems(),
     }

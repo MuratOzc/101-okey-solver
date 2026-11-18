@@ -56,14 +56,14 @@ fn main() {
                         }
                         let view = &views[i];
                         let mut a = Analyzer::new(view.clone(), 1000 + i as u64).unwrap();
-                        a.use_model(net.clone(), 0.0, true);
+                        a.use_model(net.clone());
                         let mut ra = a.report();
                         while !ra.settled && ra.iterations < 40000 {
                             a.step(8);
                             ra = a.report();
                         }
                         let mut b = Analyzer::new(view.clone(), 5000 + i as u64).unwrap();
-                        b.use_model(net.clone(), 0.0, true);
+                        b.use_model(net.clone());
                         b.step(long);
                         let rb = b.report();
                         let (ca, cb) = (&ra.candidates[0], &rb.candidates[0]);
@@ -71,7 +71,7 @@ fn main() {
                         let (mut d, mut se) = (0.0, 0.0);
                         if !same {
                             let mut ev = Analyzer::new(view.clone(), 9000 + i as u64).unwrap();
-                            ev.use_model(net.clone(), 0.0, true);
+                            ev.use_model(net.clone());
                             ev.set_field(&Field {
                                 version: 0,
                                 depth: 0,

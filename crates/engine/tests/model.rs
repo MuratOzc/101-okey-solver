@@ -124,13 +124,9 @@ fn the_model_player_never_loses_or_invents_a_tile() {
     let mut ended = 0;
     for seed in 0..150u64 {
         let mut model = ModelAgent {
-            label: "model".into(),
             net: Arc::new(random_net(seed, false)),
         };
-        let mut bot = BotAgent {
-            label: "bot".into(),
-            policy: Policy::TUNED,
-        };
+        let mut bot = BotAgent { policy: Policy::TUNED };
         let mut g = Game::deal(&rules, &mut Rng::new(seed), (seed % 4) as u8);
         let mut first = true;
         for _ in 0..400 {
@@ -163,7 +159,7 @@ fn the_search_uses_the_network_only_where_it_was_trained() {
         view.deck_count -= 1;
         change(&mut view);
         let mut a = Analyzer::with_options(view, 1, Options::default()).unwrap();
-        a.use_model(Arc::new(random_net(3, partners)), 0.0, true);
+        a.use_model(Arc::new(random_net(3, partners)));
         a.step(4);
         a.report().model
     };
@@ -205,7 +201,7 @@ fn only_deals_played_to_the_end_count_toward_how_the_hand_ends() {
             },
         )
         .unwrap();
-        a.use_model(Arc::new(random_net(3, false)), 0.0, true);
+        a.use_model(Arc::new(random_net(3, false)));
         a.step(60);
         a.report()
     };

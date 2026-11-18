@@ -33,10 +33,6 @@ struct Seer {
 }
 
 impl Agent for Seer {
-    fn name(&self) -> String {
-        "seer".into()
-    }
-
     fn turn(&mut self, g: &mut Game, sv: &mut Solver, first: bool) -> Option<Outcome> {
         let p = g.current;
         g.policy = self.policies;
@@ -119,17 +115,11 @@ impl Nets {
 }
 
 fn seat(spec: &str, nets: &Nets, seed: u64, table: [&str; 4]) -> Box<dyn Agent> {
-    let bot = |policy| -> Box<dyn Agent> {
-        Box::new(BotAgent {
-            label: spec.into(),
-            policy,
-        })
-    };
+    let bot = |policy| -> Box<dyn Agent> { Box::new(BotAgent { policy }) };
     let mut parts = spec.split('+');
     match parts.next().unwrap() {
         "finisher" | "holder" | "patient" | "tuned" | "basic" => bot(policy_of(spec)),
         "god" => Box::new(OracleAgent {
-            label: spec.into(),
             policy: Policy::TUNED,
             depth: 0,
         }),
@@ -139,10 +129,7 @@ fn seat(spec: &str, nets: &Nets, seed: u64, table: [&str; 4]) -> Box<dyn Agent> 
             net: nets.of(spec),
             discards: 8,
         }),
-        "model" => Box::new(ModelAgent {
-            label: spec.into(),
-            net: nets.of(spec),
-        }),
+        "model" => Box::new(ModelAgent { net: nets.of(spec) }),
         "app" => {
             let mut opts = Options::default();
             let mut iterations = 80;
@@ -166,14 +153,13 @@ fn seat(spec: &str, nets: &Nets, seed: u64, table: [&str; 4]) -> Box<dyn Agent> 
                     iterations = o.parse().expect("deals");
                 }
             }
-            Box::new(HelpedAgent {
-                label: spec.into(),
+            Box::new(SearchAgent {
                 opts,
                 iterations,
                 seed,
                 help: Help {
                     peek,
-                    model: Some((nets.of(spec), 0.0, true)),
+                    model: Some(nets.of(spec)),
                 },
             })
         }

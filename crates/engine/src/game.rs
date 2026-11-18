@@ -985,11 +985,9 @@ impl Game {
     }
 
     /// The opening / laying plans worth trying for a player in the given state.
-    pub fn plan_choices(opened: Opened, rich: bool) -> Vec<OpenChoice> {
-        match (opened, rich) {
-            (Opened::No, false) => vec![OpenChoice::Finish, OpenChoice::OPEN, OpenChoice::PAIRS, OpenChoice::Stay],
-            (_, false) => vec![OpenChoice::LAY],
-            (Opened::No, true) => {
+    pub fn plan_choices(opened: Opened) -> Vec<OpenChoice> {
+        match opened {
+            Opened::No => {
                 let mut v = vec![OpenChoice::Finish];
                 for style in [
                     OpenStyle::MaxValue,
@@ -1009,7 +1007,7 @@ impl Game {
                 ]);
                 v
             }
-            (_, true) => vec![
+            _ => vec![
                 OpenChoice::Lay(LayStyle::All),
                 OpenChoice::Lay(LayStyle::AllSafe),
                 OpenChoice::Lay(LayStyle::Nothing),
@@ -1019,10 +1017,10 @@ impl Game {
 
     /// Distinct turns for `p` built from those plans: each resulting position with its best few discards.
     /// The game returned with each is the state after the plan, before the discard (None = hand ended).
-    pub fn plan_turns(&self, sv: &mut Solver, p: u8, taken: Option<Tile>, rich: bool, discards: usize) -> Vec<(OpenChoice, Option<Tile>)> {
+    pub fn plan_turns(&self, sv: &mut Solver, p: u8, taken: Option<Tile>, discards: usize) -> Vec<(OpenChoice, Option<Tile>)> {
         let mut out = Vec::new();
         let mut seen: Vec<(Counts, Vec<(u8, Shape)>, i32, bool)> = Vec::new();
-        for choice in Self::plan_choices(self.players[p as usize].opened, rich) {
+        for choice in Self::plan_choices(self.players[p as usize].opened) {
             let mut g = self.clone();
             let Ok(res) = g.apply_choice(sv, p, choice, taken) else { continue };
             let key = (
@@ -1152,7 +1150,7 @@ impl Game {
     /// `hero` has drawn: pick the plan and discard whose played-out continuation is best, and make it.
     pub fn lookahead_act(&mut self, sv: &mut Solver, hero: u8, taken: Option<Tile>, deeper: u8) -> Option<Outcome> {
         let mut best: Option<(i32, Game, Option<Outcome>)> = None;
-        for (choice, discard) in self.plan_turns(sv, hero, taken, true, LOOKAHEAD_DISCARDS) {
+        for (choice, discard) in self.plan_turns(sv, hero, taken, LOOKAHEAD_DISCARDS) {
             let mut g = self.clone();
             let Ok(res) = g.apply_choice(sv, hero, choice, taken) else {
                 continue;

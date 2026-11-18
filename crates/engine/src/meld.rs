@@ -330,12 +330,6 @@ impl Solver {
         }
     }
 
-    pub fn set_rules(&mut self, rules: &Rules) {
-        self.rules = rules.clone();
-        self.cache.clear();
-        self.known = [([0; NIDS], None, None); KNOWN];
-    }
-
     fn remember(&mut self, hand: &Counts, left_over: Option<u8>, value: Option<i32>) {
         if let Some(e) = self.known.iter_mut().find(|e| e.0 == *hand) {
             e.1 = e.1.or(left_over);
