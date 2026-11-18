@@ -93,11 +93,15 @@ impl Rules {
 
     /// What every score of the hand is multiplied by after such a finish.
     pub fn finish_mult(&self, okey: bool, elden: bool, pairs: bool) -> i32 {
-        [(okey, self.mult_okey_finish), (elden, self.mult_elden), (pairs, self.mult_pair_finish)]
-            .into_iter()
-            .filter(|&(on, _)| on)
-            .map(|(_, m)| m)
-            .product()
+        [
+            (okey, self.mult_okey_finish),
+            (elden, self.mult_elden),
+            (pairs, self.mult_pair_finish),
+        ]
+        .into_iter()
+        .filter(|&(on, _)| on)
+        .map(|(_, m)| m)
+        .product()
     }
 
     /// What a hand that did not finish is charged before that multiplier. `left` is what its tiles

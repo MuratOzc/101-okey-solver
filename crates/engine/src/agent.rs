@@ -55,7 +55,9 @@ pub struct SearchAgent {
 impl Agent for SearchAgent {
     fn turn(&mut self, g: &mut Game, sv: &mut Solver, first: bool) -> Option<Outcome> {
         self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        at_seat_0(g, |mine| search_turn(mine, sv, first, self.iterations, self.seed, &self.opts, &self.help))
+        at_seat_0(g, |mine| {
+            search_turn(mine, sv, first, self.iterations, self.seed, &self.opts, &self.help)
+        })
     }
 }
 

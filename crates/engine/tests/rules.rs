@@ -875,7 +875,10 @@ fn generator_builds_runs_that_end_on_the_ace_after_the_king() {
     assert!(lays("S12 OK S1 K5", &rules, high(1 << 13)));
     assert!(lays("S12 S13 OK K5", &rules, high(1 << 14)), "the okey may stand for the ace");
     assert!(lays("OK OK S1 K5", &rules, high(1 << 12 | 1 << 13)));
-    assert!(!lays("S12 S13 S1 K5", &Rules::default(), high(0)), "not at a table where 1 is only low");
+    assert!(
+        !lays("S12 S13 S1 K5", &Rules::default(), high(0)),
+        "not at a table where 1 is only low"
+    );
 }
 
 #[test]
@@ -884,7 +887,15 @@ fn a_seat_reading_the_table_sees_the_raised_thresholds() {
         katlamali: true,
         ..Rules::default()
     };
-    let mut g = game_with(rules, [&format!("{OPEN_101} M5 M6 M7 Si8 Si2"), "K1 K1 M2 M2 S3 S3 Si4 Si4 K6 K6 M9 M9 Si1", "", ""]);
+    let mut g = game_with(
+        rules,
+        [
+            &format!("{OPEN_101} M5 M6 M7 Si8 Si2"),
+            "K1 K1 M2 M2 S3 S3 Si4 Si4 K6 K6 M9 M9 Si1",
+            "",
+            "",
+        ],
+    );
     assert!(g.try_open_melds(&mut sv(&g), 0, None));
     assert!(g.try_open_pairs(1, None));
     assert!(g.meld_req > 101 && g.pair_req > 5);
