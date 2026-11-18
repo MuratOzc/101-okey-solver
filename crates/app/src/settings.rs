@@ -32,7 +32,7 @@ fn bools() -> Vec<(&'static str, Vec<(&'static str, GetB, SetB)>)> {
                 b!("Okey + tek taş = çift", joker_pairs_with_single),
                 b!("İki okey = çift", two_jokers_pair),
                 b!("Gösterge (dağıtımda geldiyse) herhangi bir taşla çift", gosterge_pair),
-                b!("12-13-1 serisi geçerli", ace_after_king),
+                b!("12-13-1 serisi geçerli", one_after_thirteen),
             ],
         ),
         (
@@ -84,7 +84,7 @@ fn nums() -> Vec<(&'static str, Vec<(&'static str, GetN, SetN)>)> {
                 n!("Yeni seri en fazla taş", max_run_len),
                 n!("Bir uca turda en fazla işleme", layoff_per_end),
                 n!("Çift alanına turda en fazla çift", pairs_per_turn),
-                n!("12-13-1'de 1'in değeri", ace_high_value),
+                n!("12-13-1'de 1'in değeri", high_one_value),
             ],
         ),
         (

@@ -101,7 +101,7 @@ pub struct LayOption {
 }
 
 pub(crate) fn run_top(rules: &Rules, lo: u8) -> u8 {
-    if rules.ace_after_king && lo > 1 { 14 } else { 13 }
+    if rules.one_after_thirteen && lo > 1 { 14 } else { 13 }
 }
 
 impl Table {
@@ -394,19 +394,19 @@ pub fn classify(tiles: &[Tile], rules: &Rules) -> Option<Shape> {
 /// at that end. None when the order does not spell a run.
 fn in_tap_order(tiles: &[Tile], c: u8, rules: &Rules) -> Option<Shape> {
     let len = tiles.len() as i32;
-    let at = |high_ace: bool| -> Vec<(i32, i32)> {
+    let at = |high_one: bool| -> Vec<(i32, i32)> {
         tiles
             .iter()
             .enumerate()
             .filter(|&(_, &t)| t != JOKER)
-            .map(|(i, &t)| (i as i32, if high_ace && num(t) == 1 { 14 } else { num(t) as i32 }))
+            .map(|(i, &t)| (i as i32, if high_one && num(t) == 1 { 14 } else { num(t) as i32 }))
             .collect()
     };
-    for high_ace in [false, true] {
-        if high_ace && !rules.ace_after_king {
+    for high_one in [false, true] {
+        if high_one && !rules.one_after_thirteen {
             break;
         }
-        let nat = at(high_ace);
+        let nat = at(high_one);
         if nat.len() < 2 {
             return None;
         }
@@ -453,7 +453,7 @@ fn run_from(tiles: &[Tile], c: u8, rules: &Rules) -> Option<Shape> {
         }
         let top = if first == 1 {
             13
-        } else if rules.ace_after_king {
+        } else if rules.one_after_thirteen {
             14
         } else {
             13
@@ -482,7 +482,7 @@ fn run_from(tiles: &[Tile], c: u8, rules: &Rules) -> Option<Shape> {
     if let Some(s) = try_layout(&positions) {
         return Some(s);
     }
-    if rules.ace_after_king && positions.first() == Some(&1) {
+    if rules.one_after_thirteen && positions.first() == Some(&1) {
         let mut p2: Vec<u8> = positions.iter().map(|&p| if p == 1 { 14 } else { p }).collect();
         p2.sort_unstable();
         return try_layout(&p2);

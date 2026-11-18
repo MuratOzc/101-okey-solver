@@ -853,9 +853,9 @@ fn exhaustive_analyzer_reports_explicit_moves() {
 }
 
 #[test]
-fn generator_builds_runs_that_end_on_the_ace_after_the_king() {
+fn generator_builds_runs_that_end_on_a_1_after_13() {
     let rules = Rules {
-        ace_after_king: true,
+        one_after_thirteen: true,
         ..Rules::default()
     };
     let high = |jokers: u16| Shape::Run {
@@ -873,7 +873,7 @@ fn generator_builds_runs_that_end_on_the_ace_after_the_king() {
     assert!(lays("S12 S13 S1 K5", &rules, high(0)));
     assert!(lays("OK S13 S1 K5", &rules, high(1 << 12)));
     assert!(lays("S12 OK S1 K5", &rules, high(1 << 13)));
-    assert!(lays("S12 S13 OK K5", &rules, high(1 << 14)), "the okey may stand for the ace");
+    assert!(lays("S12 S13 OK K5", &rules, high(1 << 14)), "the okey may stand for the 1");
     assert!(lays("OK OK S1 K5", &rules, high(1 << 12 | 1 << 13)));
     assert!(
         !lays("S12 S13 S1 K5", &Rules::default(), high(0)),

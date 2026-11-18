@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Shape {
-    /// Positions lo..=hi; position 14 is the ace placed after 13. Bit p of `jokers` marks an okey at p.
+    /// Positions lo..=hi; position 14 is the 1 placed after 13. Bit p of `jokers` marks an okey at p.
     Run {
         color: u8,
         lo: u8,
@@ -122,7 +122,7 @@ impl Shape {
 
     pub fn open_value(&self, rules: &Rules) -> i32 {
         match *self {
-            Shape::Run { lo, hi, .. } => (lo..=hi).map(|p| if p == 14 { rules.ace_high_value } else { p as i32 }).sum(),
+            Shape::Run { lo, hi, .. } => (lo..=hi).map(|p| if p == 14 { rules.high_one_value } else { p as i32 }).sum(),
             Shape::Group { num, .. } => num as i32 * self.len() as i32,
             _ => 0,
         }
@@ -152,24 +152,24 @@ pub fn coverable(hand: &Counts, t: Tile, rules: &Rules) -> bool {
     if 1 + mates + jokers >= min_len {
         return true;
     }
-    let top = if rules.ace_after_king { 14 } else { 13 };
+    let top = if rules.one_after_thirteen { 14 } else { 13 };
     let window_through = |at: u8| {
         (at.saturating_sub(min_len - 1).max(1)..=at).any(|a| {
             let b = a + min_len - 1;
             b <= top && (a..=b).filter(|&p| p == at || hand[pos_tile(c, p) as usize] > 0).count() as u8 + jokers >= min_len
         })
     };
-    window_through(n) || (n == 1 && rules.ace_after_king && window_through(14))
+    window_through(n) || (n == 1 && rules.one_after_thirteen && window_through(14))
 }
 
 /// More than the opening total any arrangement of this hand can reach.
 pub fn open_bound(hand: &Counts, rules: &Rules) -> i32 {
-    let high = 13.max(rules.ace_high_value);
+    let high = 13.max(rules.high_one_value);
     let mut bound = hand[JOKER as usize] as i32 * high;
     for t in 0..NNAT as Tile {
         if hand[t as usize] > 0 && coverable(hand, t, rules) {
-            let worth = if num(t) == 1 && rules.ace_after_king {
-                1.max(rules.ace_high_value)
+            let worth = if num(t) == 1 && rules.one_after_thirteen {
+                1.max(rules.high_one_value)
             } else {
                 num(t) as i32
             };
@@ -389,8 +389,8 @@ impl Solver {
         let len = self.rules.max_run_len.max(4) as i32;
         // The richest meld a tile numbered `n` can sit in: a full-length run reaching as high as it can, or four of a kind.
         let richest = |n: i32| {
-            if self.rules.ace_after_king {
-                return len * 13.max(self.rules.ace_high_value);
+            if self.rules.one_after_thirteen {
+                return len * 13.max(self.rules.high_one_value);
             }
             let top = (n + len - 1).min(13);
             (top - len + 1..=top).sum::<i32>().max(4 * n)
@@ -478,7 +478,7 @@ impl Solver {
         // only if a real meld holds them both, which leaves most of a typical hand in tiny parts.
         let min_len = self.rules.meld_min_len.max(2);
         let exact = jokers == 0;
-        let top = if self.rules.ace_after_king { 14 } else { 13 };
+        let top = if self.rules.one_after_thirteen { 14 } else { 13 };
         for c in 0..NCOLORS {
             let has = |pos: u8| (1..=top).contains(&pos) && hand[pos_tile(c, pos) as usize] > 0;
             let mut last: Option<(u8, Tile)> = None;
@@ -865,7 +865,7 @@ impl Solver {
         // The candidates sit on a shared stack because trying one recurses back into here.
         let start = self.scratch.len();
         self.runs_at(t, c, n);
-        if n == 1 && self.rules.ace_after_king {
+        if n == 1 && self.rules.one_after_thirteen {
             self.runs_at(t, c, 14);
         }
         for k in start..self.scratch.len() {
@@ -885,7 +885,7 @@ impl Solver {
     fn runs_at(&mut self, t: Tile, c: u8, a: u8) {
         let j = if self.p.joker_runs { self.counts[JOKER as usize] as i32 } else { 0 };
         let min_len = self.rules.meld_min_len.max(2);
-        let top = if self.rules.ace_after_king { 14 } else { 13 };
+        let top = if self.rules.one_after_thirteen { 14 } else { 13 };
         let lo_min = if a == 14 { 2 } else { 1 };
         let mut need_left = 0i32;
         let mut lo = a;

@@ -20,8 +20,10 @@ pub struct Rules {
     pub max_run_len: u8,
     pub layoff_per_end: u8,
     pub pairs_per_turn: u8,
-    pub ace_after_king: bool,
-    pub ace_high_value: i32,
+    #[serde(alias = "ace_after_king")]
+    pub one_after_thirteen: bool,
+    #[serde(alias = "ace_high_value")]
+    pub high_one_value: i32,
 
     pub joker_pairs_with_single: bool,
     pub two_jokers_pair: bool,
@@ -131,8 +133,8 @@ impl Default for Rules {
             max_run_len: 5,
             layoff_per_end: 2,
             pairs_per_turn: 3,
-            ace_after_king: false,
-            ace_high_value: 1,
+            one_after_thirteen: false,
+            high_one_value: 1,
             joker_pairs_with_single: true,
             two_jokers_pair: false,
             gosterge_pair: true,

@@ -49,10 +49,10 @@ fn run_length_capped_at_five() {
 }
 
 #[test]
-fn ace_after_king_option() {
+fn one_after_thirteen_option() {
     let r = Rules {
-        ace_after_king: true,
-        ace_high_value: 1,
+        one_after_thirteen: true,
+        high_one_value: 1,
         ..Rules::default()
     };
     let mut sv = Solver::new(&r);
@@ -498,10 +498,10 @@ const GOLDEN: [u64; 2] = [17992581461281428827, 11075590812157687950];
 /// The cheap pre-checks may only ever say "impossible" when the full search agrees.
 #[test]
 fn quick_bounds_never_contradict_the_search() {
-    for ace in [false, true] {
+    for high in [false, true] {
         let rules = Rules {
-            ace_after_king: ace,
-            ace_high_value: if ace { 11 } else { 1 },
+            one_after_thirteen: high,
+            high_one_value: if high { 11 } else { 1 },
             ..Rules::default()
         };
         let mut sv = Solver::new(&rules);
@@ -530,9 +530,9 @@ fn quick_bounds_never_contradict_the_search() {
 /// for every kind of question the engine asks.
 #[test]
 fn split_search_matches_the_whole_search() {
-    for ace in [false, true] {
+    for high in [false, true] {
         let rules = Rules {
-            ace_after_king: ace,
+            one_after_thirteen: high,
             ..Rules::default()
         };
         let mut split = Solver::new(&rules);

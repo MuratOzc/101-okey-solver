@@ -199,7 +199,7 @@ impl Game {
 }
 
 /// Every meld whose lowest-standing natural tile is `i`, built from `counts` (okeys may stand anywhere).
-/// An ace stands lowest as a 1; after the king it belongs to the run of the tile below it.
+/// A 1 stands lowest; after 13 it belongs to the run of the tile below it.
 fn melds_with(counts: &Counts, i: Tile, rules: &Rules) -> Vec<Shape> {
     let (c, n) = (color(i), num(i));
     let jokers = counts[JOKER as usize];
@@ -269,7 +269,7 @@ fn melds_with(counts: &Counts, i: Tile, rules: &Rules) -> Vec<Shape> {
         }
     };
     runs_from(n, &mut out);
-    if n == 1 && rules.ace_after_king {
+    if n == 1 && rules.one_after_thirteen {
         runs_from(14, &mut out);
     }
     out
@@ -278,12 +278,12 @@ fn melds_with(counts: &Counts, i: Tile, rules: &Rules) -> Vec<Shape> {
 /// More than the melds still to come can add to an opening total.
 fn potential(counts: &Counts, from: usize, rules: &Rules) -> i32 {
     let rest: i32 = (from..NNAT).map(|k| counts[k] as i32 * num(k as Tile) as i32).sum();
-    let (mut okey, mut aces) = (13, 0);
-    if rules.ace_after_king {
-        okey = okey.max(rules.ace_high_value);
-        aces = (0..NCOLORS).map(|c| counts[id(c, 1) as usize] as i32).sum::<i32>() * rules.ace_high_value.max(0);
+    let (mut okey, mut ones) = (13, 0);
+    if rules.one_after_thirteen {
+        okey = okey.max(rules.high_one_value);
+        ones = (0..NCOLORS).map(|c| counts[id(c, 1) as usize] as i32).sum::<i32>() * rules.high_one_value.max(0);
     }
-    rest + aces + counts[JOKER as usize] as i32 * okey
+    rest + ones + counts[JOKER as usize] as i32 * okey
 }
 
 /// Every set of disjoint melds worth at least `min_value`, each set exactly once.
