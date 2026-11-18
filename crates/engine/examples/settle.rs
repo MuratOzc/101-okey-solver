@@ -1,4 +1,7 @@
 use okey_engine::analysis::*;
+mod common;
+
+use common::*;
 use okey_engine::game::*;
 use okey_engine::meld::Solver;
 use okey_engine::net::Net;
@@ -6,7 +9,6 @@ use okey_engine::policy::Policy;
 use okey_engine::rng::Rng;
 use okey_engine::rules::Rules;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn midgame(rules: &Rules, sv: &mut Solver, seed: u64, turns: usize) -> Option<View> {
     let mut g = Game::deal(rules, &mut Rng::new(seed), 0);
@@ -41,57 +43,41 @@ fn main() {
         .filter_map(|s| midgame(&rules, &mut sv, s, 3 + 4 * (s % 6) as usize))
         .take(want)
         .collect();
-    let next = AtomicUsize::new(0);
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().saturating_sub(2).max(1));
-    let rows: Vec<(usize, usize, u64, bool, f64, f64, String, String)> = std::thread::scope(|scope| {
-        let hs: Vec<_> = (0..threads)
-            .map(|_| {
-                let (views, next, net) = (&views, &next, &net);
-                scope.spawn(move || {
-                    let mut out = Vec::new();
-                    loop {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        if i >= views.len() {
-                            break;
-                        }
-                        let view = &views[i];
-                        let mut a = Analyzer::new(view.clone(), 1000 + i as u64).unwrap();
-                        a.use_model(net.clone());
-                        let mut ra = a.report();
-                        while !ra.settled && ra.iterations < 40000 {
-                            a.step(8);
-                            ra = a.report();
-                        }
-                        let mut b = Analyzer::new(view.clone(), 5000 + i as u64).unwrap();
-                        b.use_model(net.clone());
-                        b.step(long);
-                        let rb = b.report();
-                        let (ca, cb) = (&ra.candidates[0], &rb.candidates[0]);
-                        let same = ca.decision == cb.decision;
-                        let (mut d, mut se) = (0.0, 0.0);
-                        if !same {
-                            let mut ev = Analyzer::new(view.clone(), 9000 + i as u64).unwrap();
-                            ev.use_model(net.clone());
-                            ev.set_field(&Field {
-                                version: 0,
-                                depth: 0,
-                                cands: vec![ca.decision, cb.decision],
-                            });
-                            let diffs: Vec<f64> = (0..6000u64)
-                                .map(|k| ev.evaluate(77_000 + k))
-                                .map(|r| (r[0][0] - r[1][0]) as f64 / 3.0)
-                                .collect();
-                            let n = diffs.len() as f64;
-                            d = diffs.iter().sum::<f64>() / n;
-                            se = (diffs.iter().map(|x| (x - d) * (x - d)).sum::<f64>() / (n - 1.0) / n).sqrt();
-                        }
-                        out.push((i, ra.positions, ra.iterations, same, d, se, ca.label.clone(), cb.label.clone()));
-                    }
-                    out
-                })
-            })
-            .collect();
-        hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    let rows: Vec<(usize, usize, u64, bool, f64, f64, String, String)> = parallel(&rules, views.len() as u64, |_, i| {
+        let i = i as usize;
+        let view = &views[i];
+        let mut a = Analyzer::new(view.clone(), 1000 + i as u64).unwrap();
+        a.use_model(net.clone());
+        let mut ra = a.report();
+        while !ra.settled && ra.iterations < 40000 {
+            a.step(8);
+            ra = a.report();
+        }
+        let mut b = Analyzer::new(view.clone(), 5000 + i as u64).unwrap();
+        b.use_model(net.clone());
+        b.step(long);
+        let rb = b.report();
+        let (ca, cb) = (&ra.candidates[0], &rb.candidates[0]);
+        let same = ca.decision == cb.decision;
+        let (mut d, mut se) = (0.0, 0.0);
+        if !same {
+            let mut ev = Analyzer::new(view.clone(), 9000 + i as u64).unwrap();
+            ev.use_model(net.clone());
+            ev.set_field(&Field {
+                version: 0,
+                depth: 0,
+                cands: vec![ca.decision, cb.decision],
+            });
+            let diffs: Vec<f64> = (0..6000u64)
+                .map(|k| ev.evaluate(77_000 + k))
+                .map(|r| (r[0][0] - r[1][0]) as f64 / 3.0)
+                .collect();
+            let n = diffs.len() as f64;
+            d = diffs.iter().sum::<f64>() / n;
+            se = (diffs.iter().map(|x| (x - d) * (x - d)).sum::<f64>() / (n - 1.0) / n).sqrt();
+        }
+
+        (i, ra.positions, ra.iterations, same, d, se, ca.label.clone(), cb.label.clone())
     });
     let n = rows.len() as f64;
     let same = rows.iter().filter(|r| r.3).count();

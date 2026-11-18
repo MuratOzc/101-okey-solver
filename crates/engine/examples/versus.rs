@@ -7,6 +7,9 @@
 //! Opponents rotate around the table from hand to hand. With ",partners" after the opponents the seat
 //! across is the hero's partner, nobody rotates, and the lead is team against team.
 
+mod common;
+
+use common::*;
 use okey_engine::agent::*;
 use okey_engine::analysis::Options;
 use okey_engine::game::{Game, Outcome};
@@ -18,7 +21,6 @@ use okey_engine::rng::Rng;
 use okey_engine::rules::Rules;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 const PLAY_ON_DISCARDS: usize = 5;
@@ -167,13 +169,6 @@ fn seat(spec: &str, nets: &Nets, seed: u64, table: [&str; 4]) -> Box<dyn Agent> 
     }
 }
 
-fn spread(v: &[f64]) -> (f64, f64) {
-    let n = v.len() as f64;
-    let mean = v.iter().sum::<f64>() / n;
-    let var = v.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0);
-    (mean, (var / n).sqrt())
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let hands: u64 = args[1].parse().expect("hands");
@@ -204,45 +199,26 @@ fn main() {
         partners,
         ..Rules::default()
     };
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().saturating_sub(2).max(1));
-    let next = AtomicU64::new(0);
     let start = Instant::now();
-    let mut rows: Vec<(u64, Vec<[i32; 4]>, usize, Vec<f64>)> = std::thread::scope(|scope| {
-        let ws: Vec<_> = (0..threads)
-            .map(|_| {
-                let (next, rules, nets, table, heroes) = (&next, &rules, &nets, &table, &heroes);
-                scope.spawn(move || {
-                    let mut sv = Solver::new(rules);
-                    let mut out = Vec::new();
-                    loop {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        if i >= hands {
-                            break;
-                        }
-                        let mut rng = Rng::new(0xD0E1 ^ i.wrapping_mul(0x9E37_79B9_7F4A_7C15));
-                        let deal = Game::deal(rules, &mut rng, (i % 4) as u8);
-                        let rot = if partners { 0 } else { (i / 4 % 3) as usize };
-                        let (mut per, mut took) = (Vec::new(), Vec::new());
-                        for h in heroes {
-                            let mut g = deal.clone();
-                            let kinds: [&str; 4] =
-                                std::array::from_fn(|q| if q == 0 { h.as_str() } else { table[(q - 1 + rot) % 3].as_str() });
-                            let mut hero = seat(h, nets, i, kinds);
-                            let mut o: Vec<Box<dyn Agent>> = (1..4).map(|q| seat(kinds[q], nets, i * 7 + q as u64, kinds)).collect();
-                            let [a, b, c] = &mut o[..] else { unreachable!() };
-                            let t = Instant::now();
-                            per.push(play_hand(&mut g, &mut sv, &mut [hero.as_mut(), a.as_mut(), b.as_mut(), c.as_mut()]));
-                            took.push(t.elapsed().as_secs_f64());
-                        }
-                        out.push((i, per, rot, took));
-                    }
-                    out
-                })
-            })
-            .collect();
-        ws.into_iter().flat_map(|w| w.join().unwrap()).collect()
+    let rows: Vec<(u64, Vec<[i32; 4]>, usize, Vec<f64>)> = parallel(&rules, hands, |sv, i| {
+        let (rules, nets) = (&rules, &nets);
+        let mut rng = Rng::new(0xD0E1 ^ i.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let deal = Game::deal(rules, &mut rng, (i % 4) as u8);
+        let rot = if partners { 0 } else { (i / 4 % 3) as usize };
+        let (mut per, mut took) = (Vec::new(), Vec::new());
+        for h in &heroes {
+            let mut g = deal.clone();
+            let kinds: [&str; 4] = std::array::from_fn(|q| if q == 0 { h.as_str() } else { table[(q - 1 + rot) % 3].as_str() });
+            let mut hero = seat(h, nets, i, kinds);
+            let mut o: Vec<Box<dyn Agent>> = (1..4).map(|q| seat(kinds[q], nets, i * 7 + q as u64, kinds)).collect();
+            let [a, b, c] = &mut o[..] else { unreachable!() };
+            let t = Instant::now();
+            per.push(play_hand(&mut g, sv, &mut [hero.as_mut(), a.as_mut(), b.as_mut(), c.as_mut()]));
+            took.push(t.elapsed().as_secs_f64());
+        }
+
+        (i, per, rot, took)
     });
-    rows.sort_by_key(|r| r.0);
     println!("{hands} hands against {table:?}, {:.0}s", start.elapsed().as_secs_f64());
     println!(
         "{:<28}{:>16}{:>20}{:>10}{:>10}{:>14}{:>10}  against each kind",

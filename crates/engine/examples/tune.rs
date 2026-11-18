@@ -3,12 +3,14 @@
 //! it replaces the champion only if it is clearly better, and is then re-checked on fresh deals.
 //! Usage: tune [rounds] [mutations-per-round] [deals-per-test]
 
+mod common;
+
+use common::*;
 use okey_engine::game::*;
 use okey_engine::meld::Solver;
 use okey_engine::policy::{OpenStyle, Policy};
 use okey_engine::rng::Rng;
 use okey_engine::rules::Rules;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 fn gap(s: &[i32; 4]) -> f64 {
@@ -24,31 +26,11 @@ fn play(rules: &Rules, sv: &mut Solver, seed: u64, hero: &Policy, others: &Polic
 
 /// Mean and standard error of (candidate − champion) seat-0 gap on the same deals. Negative is better.
 fn compare(rules: &Rules, cand: &Policy, champ: &Policy, first_seed: u64, deals: u64) -> (f64, f64) {
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let next = AtomicU64::new(0);
-    let diffs: Vec<f64> = std::thread::scope(|sc| {
-        let handles: Vec<_> = (0..threads)
-            .map(|_| {
-                sc.spawn(|| {
-                    let mut sv = Solver::new(rules);
-                    let mut v = Vec::new();
-                    loop {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        if i >= deals {
-                            break v;
-                        }
-                        let seed = first_seed + i;
-                        v.push(play(rules, &mut sv, seed, cand, champ) - play(rules, &mut sv, seed, champ, champ));
-                    }
-                })
-            })
-            .collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    let diffs: Vec<f64> = parallel(rules, deals, |sv, i| {
+        let seed = first_seed + i;
+        play(rules, sv, seed, cand, champ) - play(rules, sv, seed, champ, champ)
     });
-    let n = diffs.len() as f64;
-    let m = diffs.iter().sum::<f64>() / n;
-    let var = diffs.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / (n - 1.0);
-    (m, (var / n).sqrt())
+    spread(&diffs)
 }
 
 fn normal(rng: &mut Rng) -> f32 {
