@@ -1,3 +1,4 @@
+use crate::game::Opened;
 use crate::tile::{JOKER, Tile, num};
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +65,49 @@ impl Rules {
             return 0;
         }
         num(t) as i32 * self.take_penalty_mult
+    }
+
+    pub fn same_team(&self, a: u8, b: u8) -> bool {
+        a == b || (self.partners && a == (b + 2) % 4)
+    }
+
+    /// What opening needs once the given openings (kind, points or pairs) are down: (meld points, pairs).
+    pub fn thresholds(&self, openings: impl IntoIterator<Item = (Opened, i32)>) -> (i32, u8) {
+        let (mut meld, mut pair) = (self.open_min, self.pair_min);
+        if self.katlamali {
+            for (kind, value) in openings {
+                match kind {
+                    Opened::Melds => meld = meld.max(value + self.raise_meld_by),
+                    Opened::Pairs => pair = pair.max(value as u8 + self.raise_pair_by),
+                    Opened::No => {}
+                }
+            }
+        }
+        (meld, pair)
+    }
+
+    /// What opening with this many pairs takes off the opener's score.
+    pub fn big_pairs_reward(&self, pairs: u8) -> i32 {
+        if pairs >= self.big_pairs_min { self.big_pairs_penalty } else { 0 }
+    }
+
+    /// What every score of the hand is multiplied by after such a finish.
+    pub fn finish_mult(&self, okey: bool, elden: bool, pairs: bool) -> i32 {
+        [(okey, self.mult_okey_finish), (elden, self.mult_elden), (pairs, self.mult_pair_finish)]
+            .into_iter()
+            .filter(|&(on, _)| on)
+            .map(|(_, m)| m)
+            .product()
+    }
+
+    /// What a hand that did not finish is charged before that multiplier. `left` is what its tiles
+    /// count, okeys included.
+    pub fn hand_charge(&self, opened: Opened, left: i32, okeys: i32) -> i32 {
+        match opened {
+            Opened::No => self.score_unopened + okeys * self.joker_in_hand,
+            Opened::Melds => left,
+            Opened::Pairs => left * self.pair_hand_mult,
+        }
     }
 }
 

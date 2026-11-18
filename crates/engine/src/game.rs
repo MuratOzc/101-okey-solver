@@ -109,7 +109,7 @@ pub struct Game {
     pub stakes: Option<Stakes>,
 }
 
-const MAX_TURNS: usize = 400;
+pub(crate) const MAX_TURNS: usize = 400;
 const LOOKAHEAD_DISCARDS: usize = 3;
 
 pub fn partner(p: u8) -> u8 {
@@ -138,17 +138,7 @@ fn conn(hand: &Counts, t: Tile) -> i32 {
     s
 }
 
-fn remove_tiles(hand: &mut Counts, tiles: &[Tile]) {
-    for &t in tiles {
-        hand[t as usize] -= 1;
-    }
-}
-
 impl Game {
-    pub fn same_team(&self, a: u8, b: u8) -> bool {
-        a == b || (self.rules.partners && a == partner(b))
-    }
-
     pub fn hand_len(&self, p: u8) -> u32 {
         total(&self.players[p as usize].hand)
     }
@@ -172,13 +162,11 @@ impl Game {
             }
         };
         let params = Params {
-            mode: Mode::Penalty,
-            cover_w: 1000,
-            must,
             allow_melds,
             pair_dump: pair_cap > 0,
             pair_cap,
             joker_runs: self.policy[p as usize].joker_in_runs,
+            ..Params::cover(must)
         };
         (params, can_layoff)
     }
@@ -196,16 +184,7 @@ impl Game {
     }
 
     pub fn open_search(&self, sv: &mut Solver, hand: &Counts, must: Option<Tile>) -> Option<Plan> {
-        let params = Params {
-            mode: Mode::Open,
-            cover_w: 0,
-            must,
-            allow_melds: true,
-            pair_dump: false,
-            pair_cap: 0,
-            joker_runs: true,
-        };
-        let plan = sv.run(hand, params, None);
+        let plan = sv.run(hand, Params::open(must), None);
         if must.is_none() {
             sv.note_value(hand, plan.as_ref().map_or(0, |p| p.open_value(&self.rules)));
         }
@@ -230,19 +209,41 @@ impl Game {
                 self.table.pairs_added[o as usize] += 1;
                 owner = o;
             }
-            remove_tiles(&mut self.players[p as usize].hand, &s.tiles());
-            for t in s.tiles() {
-                self.seen[t as usize] += 1;
-            }
-            let mut meld = TableMeld::laid(owner, s);
-            for _ in 0..s.jokers() {
-                meld.okey_from(p, Side::Group);
-            }
-            self.table.melds.push(meld);
-            if let Some(log) = &mut self.log {
-                log.push(Step::Meld { shape: s, owner });
-            }
+            self.place(p, owner, s);
         }
+    }
+
+    /// `p` lays `shape` from hand into `owner`'s melds.
+    pub(crate) fn place(&mut self, p: u8, owner: u8, shape: Shape) {
+        for t in shape.tiles() {
+            self.players[p as usize].hand[t as usize] -= 1;
+            self.seen[t as usize] += 1;
+        }
+        let mut meld = TableMeld::laid(owner, shape);
+        for _ in 0..shape.jokers() {
+            meld.okey_from(p, Side::Group);
+        }
+        self.table.melds.push(meld);
+        if let Some(log) = &mut self.log {
+            log.push(Step::Meld { shape, owner });
+        }
+    }
+
+    /// `onto` is the meld as it stood before `tile` went to that side of it.
+    pub(crate) fn log_layoff(&mut self, onto: &TableMeld, tile: Tile, side: Side) {
+        let Some(log) = &mut self.log else { return };
+        let stands_for = match (onto.shape, side) {
+            (Shape::Run { color, lo, .. }, Side::Low) => pos_tile(color, lo - 1),
+            (Shape::Run { color, hi, .. }, Side::High) => pos_tile(color, hi + 1),
+            _ => tile,
+        };
+        log.push(Step::Layoff {
+            tile,
+            owner: onto.owner,
+            onto: onto.shape.tiles(),
+            side,
+            stands_for,
+        });
     }
 
     fn put_layoff(&mut self, p: u8, t: Tile) -> bool {
@@ -256,29 +257,22 @@ impl Game {
         if t == JOKER {
             self.table.melds[i].okey_from(p, side);
         }
-        if let (Some(log), Some(before)) = (&mut self.log, before) {
-            let stands_for = match (before[i].shape, side) {
-                (Shape::Run { color, lo, .. }, Side::Low) => pos_tile(color, lo - 1),
-                (Shape::Run { color, hi, .. }, Side::High) => pos_tile(color, hi + 1),
-                _ => t,
-            };
-            log.push(Step::Layoff {
-                tile: t,
-                owner: before[i].owner,
-                onto: before[i].shape.tiles(),
-                side,
-                stands_for,
-            });
+        if let Some(before) = before {
+            self.log_layoff(&before[i], t, side);
         }
         true
     }
 
     pub(crate) fn charge_big_pairs(&mut self, p: u8, pairs: u8) {
-        let r = &self.rules;
-        if r.big_pairs_penalty == 0 || pairs < r.big_pairs_min {
-            return;
-        }
-        self.players[p as usize].penalty -= r.big_pairs_penalty;
+        self.players[p as usize].penalty -= self.rules.big_pairs_reward(pairs);
+    }
+
+    /// `p` has opened with `value` points or pairs; at a katlamalı table the next opening needs more.
+    pub(crate) fn mark_opened(&mut self, p: u8, kind: Opened, value: i32) {
+        self.players[p as usize].opened = kind;
+        let (meld, pair) = self.rules.thresholds([(kind, value)]);
+        self.meld_req = self.meld_req.max(meld);
+        self.pair_req = self.pair_req.max(pair);
     }
 
     /// An opening arrangement in the given style, already checked against the threshold.
@@ -296,26 +290,10 @@ impl Game {
         if open_bound(&hand, &self.rules) < self.meld_req || sv.value_at_most(&hand) < self.meld_req {
             return None;
         }
-        let base = Params {
-            mode: Mode::Open,
-            cover_w: 0,
-            must,
-            allow_melds: true,
-            pair_dump: false,
-            pair_cap: 0,
-            joker_runs: true,
-        };
+        let base = Params::open(must);
         let mut plan = match style {
             OpenStyle::MaxValue => sv.run(&hand, base, None)?,
-            OpenStyle::MaxCover => sv.run(
-                &hand,
-                Params {
-                    mode: Mode::Penalty,
-                    cover_w: 1000,
-                    ..base
-                },
-                None,
-            )?,
+            OpenStyle::MaxCover => sv.run(&hand, Params::cover(must), None)?,
             OpenStyle::SafeOkey => sv.run(&hand, Params { joker_runs: false, ..base }, None)?,
             OpenStyle::NoOkey => {
                 if must == Some(JOKER) || hand[JOKER as usize] == 0 {
@@ -365,10 +343,7 @@ impl Game {
         };
         let v = plan.open_value(&self.rules);
         self.put_melds(p, &plan.melds, true);
-        self.players[p as usize].opened = Opened::Melds;
-        if self.rules.katlamali {
-            self.meld_req = self.meld_req.max(v + self.rules.raise_meld_by);
-        }
+        self.mark_opened(p, Opened::Melds, v);
         true
     }
 
@@ -399,11 +374,8 @@ impl Game {
         let Some(pairs) = self.pairs_ok(p, must) else { return false };
         let n = pairs.len() as u8;
         self.put_melds(p, &pairs, true);
-        self.players[p as usize].opened = Opened::Pairs;
+        self.mark_opened(p, Opened::Pairs, n as i32);
         self.charge_big_pairs(p, n);
-        if self.rules.katlamali {
-            self.pair_req = self.pair_req.max(n + self.rules.raise_pair_by);
-        }
         true
     }
 
@@ -440,7 +412,7 @@ impl Game {
             .swap_joker(s, p)
             .into_iter()
             .flatten()
-            .filter(|&l| !self.same_team(l, p))
+            .filter(|&l| !self.rules.same_team(l, p))
             .collect();
         for &l in &losers {
             self.players[l as usize].penalty += self.rules.okey_lost_penalty;
@@ -566,15 +538,7 @@ impl Game {
     }
 
     fn elden_plan_with(&self, sv: &mut Solver, p: u8, hand: Counts, must: Option<Tile>) -> Option<(Vec<Shape>, Tile, bool)> {
-        let params = Params {
-            mode: Mode::Penalty,
-            cover_w: 1000,
-            must,
-            allow_melds: true,
-            pair_dump: false,
-            pair_cap: 0,
-            joker_runs: true,
-        };
+        let params = Params::cover(must);
         let value_ok = |plan: &Plan| !self.rules.elden_requires_open_min || plan.open_value(&self.rules) >= self.meld_req;
         let without = |sv: &mut Solver, last: Tile| -> Option<Vec<Shape>> {
             if must == Some(last) && hand[last as usize] == 1 {
@@ -706,18 +670,19 @@ impl Game {
     }
 
     pub fn discard_penalty(&self, p: u8, t: Tile) -> i32 {
-        let r = &self.rules;
         if self.hand_len(p) <= 1 {
             return 0;
         }
-        if t == JOKER {
-            return r.penalty_discard_joker;
-        }
         let opened = self.players[p as usize].opened != Opened::No;
-        if (opened || r.islek_applies_unopened) && self.table.is_islek(t, r) {
-            return r.penalty_islek;
-        }
-        0
+        self.table.discard_penalty(t, opened, &self.rules)
+    }
+
+    /// Throw `want` when it is in hand, otherwise what the bot would throw.
+    pub fn discard_or_bot(&mut self, sv: &mut Solver, p: u8, want: Option<Tile>) {
+        let t = want
+            .filter(|&t| self.players[p as usize].hand[t as usize] > 0)
+            .unwrap_or_else(|| self.bot_discard(sv, p));
+        self.discard(p, t);
     }
 
     pub fn discard(&mut self, p: u8, t: Tile) {
@@ -946,8 +911,7 @@ impl Game {
             match self.apply_choice(sv, p, c, taken) {
                 Ok(Some(o)) => return Some(o),
                 Ok(None) => {
-                    let d = self.bot_discard(sv, p);
-                    self.discard(p, d);
+                    self.discard_or_bot(sv, p, None);
                     return None;
                 }
                 Err(()) => {
@@ -957,25 +921,30 @@ impl Game {
                 }
             }
         }
-        let d = self.bot_discard(sv, p);
-        self.discard(p, d);
+        self.discard_or_bot(sv, p, None);
         None
+    }
+
+    /// Begin `p`'s turn the way a bot does: take the side tile if it wants it, else draw.
+    /// Gives the tile taken, or the end of the hand when the deck is empty.
+    fn bot_draw(&mut self, sv: &mut Solver, p: u8) -> Result<Option<Tile>, Outcome> {
+        if self.deck.is_empty() {
+            return Err(Outcome::DeckOut);
+        }
+        self.table.new_turn();
+        if self.bot_wants_take(sv, p) {
+            return Ok(Some(self.take_top(p)));
+        }
+        self.draw(p);
+        Ok(None)
     }
 
     /// One full bot turn for the current player.
     pub fn bot_turn(&mut self, sv: &mut Solver) -> Option<Outcome> {
         let p = self.current;
-        if self.deck.is_empty() {
-            return Some(Outcome::DeckOut);
-        }
-        self.table.new_turn();
-        let taken = if self.bot_wants_take(sv, p) {
-            Some(self.take_top(p))
-        } else {
-            if self.draw(p).is_none() {
-                return Some(Outcome::DeckOut);
-            }
-            None
+        let taken = match self.bot_draw(sv, p) {
+            Ok(taken) => taken,
+            Err(end) => return Some(end),
         };
         let res = self.bot_act(sv, p, taken);
         if res.is_none() {
@@ -1015,34 +984,32 @@ impl Game {
         }
     }
 
-    /// Distinct turns for `p` built from those plans: each resulting position with its best few discards.
-    /// The game returned with each is the state after the plan, before the discard (None = hand ended).
-    pub fn plan_turns(&self, sv: &mut Solver, p: u8, taken: Option<Tile>, discards: usize) -> Vec<(OpenChoice, Option<Tile>)> {
-        let mut out = Vec::new();
-        let mut seen: Vec<(Counts, Vec<(u8, Shape)>, i32, bool)> = Vec::new();
+    /// The distinct positions those plans lead `p` to: the plan, the game after it and before any
+    /// discard, and how the hand ended if the plan ended it.
+    pub fn plan_positions(&self, sv: &mut Solver, p: u8, taken: Option<Tile>) -> Vec<(OpenChoice, Game, Option<Outcome>)> {
+        let mut out: Vec<(OpenChoice, Game, Option<Outcome>)> = Vec::new();
         for choice in Self::plan_choices(self.players[p as usize].opened) {
             let mut g = self.clone();
-            let Ok(res) = g.apply_choice(sv, p, choice, taken) else { continue };
-            let key = (
-                g.players[p as usize].hand,
-                g.table.melds.iter().map(|m| (m.owner, m.shape)).collect::<Vec<_>>(),
-                g.players.iter().map(|pl| pl.penalty).sum::<i32>(),
-                res.is_some(),
-            );
-            if seen.contains(&key) {
-                continue;
-            }
-            seen.push(key);
-            match res {
-                Some(_) => out.push((choice, None)),
-                None => {
-                    let mut scores = g.discard_scores(sv, p);
-                    scores.sort_by_key(|&(_, s)| s);
-                    out.extend(scores.into_iter().take(discards).map(|(t, _)| (choice, Some(t))));
-                }
+            let Ok(end) = g.apply_choice(sv, p, choice, taken) else { continue };
+            let same = |(_, o, o_end): &(OpenChoice, Game, Option<Outcome>)| {
+                *o_end == end
+                    && o.players[p as usize].hand == g.players[p as usize].hand
+                    && o.players.iter().zip(&g.players).all(|(a, b)| a.penalty == b.penalty)
+                    && o.table.melds.len() == g.table.melds.len()
+                    && o.table.melds.iter().zip(&g.table.melds).all(|(a, b)| a.owner == b.owner && a.shape == b.shape)
+            };
+            if !out.iter().any(same) {
+                out.push((choice, g, end));
             }
         }
         out
+    }
+
+    /// The `n` tiles the bot would soonest throw, best first.
+    pub fn best_discards(&self, sv: &mut Solver, p: u8, n: usize) -> Vec<Tile> {
+        let mut scores = self.discard_scores(sv, p);
+        scores.sort_by_key(|&(_, keep)| keep);
+        scores.into_iter().take(n).map(|(t, _)| t).collect()
     }
 
     /// (best opening total, pairs, tiles left loose after laying everything, their points)
@@ -1053,16 +1020,7 @@ impl Game {
             Opened::No => {
                 let value = self.open_search(sv, &hand, None).map_or(0, |plan| plan.open_value(&self.rules));
                 let pairs = pair_stats(&hand, &self.rules, self.gosterge_for(p)).0;
-                let cover = Params {
-                    mode: Mode::Penalty,
-                    cover_w: 1000,
-                    must: None,
-                    allow_melds: true,
-                    pair_dump: false,
-                    pair_cap: 0,
-                    joker_runs: true,
-                };
-                (value, pairs, sv.run(&hand, cover, None))
+                (value, pairs, sv.run(&hand, Params::cover(None), None))
             }
             _ => (0, 0, self.lay_search(sv, p, &hand, None)),
         };
@@ -1132,45 +1090,40 @@ impl Game {
 
     /// One turn for `hero`, chosen by trying every plan and playing each out to the end of the hand.
     fn lookahead_turn(&mut self, sv: &mut Solver, hero: u8, deeper: u8) -> Option<Outcome> {
-        if self.deck.is_empty() {
-            return Some(Outcome::DeckOut);
+        match self.bot_draw(sv, hero) {
+            Ok(taken) => self.lookahead_act(sv, hero, taken, deeper),
+            Err(end) => Some(end),
         }
-        self.table.new_turn();
-        let taken = if self.bot_wants_take(sv, hero) {
-            Some(self.take_top(hero))
-        } else {
-            if self.draw(hero).is_none() {
-                return Some(Outcome::DeckOut);
-            }
-            None
-        };
-        self.lookahead_act(sv, hero, taken, deeper)
     }
 
     /// `hero` has drawn: pick the plan and discard whose played-out continuation is best, and make it.
     pub fn lookahead_act(&mut self, sv: &mut Solver, hero: u8, taken: Option<Tile>, deeper: u8) -> Option<Outcome> {
         let mut best: Option<(i32, Game, Option<Outcome>)> = None;
-        for (choice, discard) in self.plan_turns(sv, hero, taken, LOOKAHEAD_DISCARDS) {
-            let mut g = self.clone();
-            let Ok(res) = g.apply_choice(sv, hero, choice, taken) else {
-                continue;
+        for (_, after, res) in self.plan_positions(sv, hero, taken) {
+            let lines: Vec<Game> = match res {
+                Some(_) => vec![after],
+                None => after
+                    .best_discards(sv, hero, LOOKAHEAD_DISCARDS)
+                    .into_iter()
+                    .map(|t| {
+                        let mut g = after.clone();
+                        g.discard(hero, t);
+                        g.current = (hero + 1) % 4;
+                        g
+                    })
+                    .collect(),
             };
-            if res.is_none() {
-                let Some(t) = discard.filter(|&t| g.players[hero as usize].hand[t as usize] > 0) else {
-                    continue;
+            for g in lines {
+                let mut sim = g.clone();
+                let end = match res {
+                    Some(o) => o,
+                    None if deeper > 0 => sim.play_out_lookahead(sv, hero, deeper),
+                    None => sim.play_out(sv),
                 };
-                g.discard(hero, t);
-                g.current = (hero + 1) % 4;
-            }
-            let mut sim = g.clone();
-            let end = match res {
-                Some(o) => o,
-                None if deeper > 0 => sim.play_out_lookahead(sv, hero, deeper),
-                None => sim.play_out(sv),
-            };
-            let gap = sim.cost3(&sim.scores(&end), hero);
-            if best.as_ref().is_none_or(|b| gap < b.0) {
-                best = Some((gap, g, res));
+                let gap = sim.cost3(&sim.scores(&end), hero);
+                if best.as_ref().is_none_or(|b| gap < b.0) {
+                    best = Some((gap, g, res));
+                }
             }
         }
         match best {
@@ -1216,46 +1169,21 @@ impl Game {
         Outcome::DeckOut
     }
 
-    pub fn multiplier(&self, f: &FinishInfo) -> i32 {
-        let r = &self.rules;
-        let mut m = 1;
-        if f.okey {
-            m *= r.mult_okey_finish;
-        }
-        if f.elden {
-            m *= r.mult_elden;
-        }
-        if f.pairs {
-            m *= r.mult_pair_finish;
-        }
-        m
-    }
-
     pub fn scores(&self, out: &Outcome) -> [i32; 4] {
         let r = &self.rules;
         let (mult, fin) = match out {
-            Outcome::Finished(f) => (self.multiplier(f), Some(f.player)),
+            Outcome::Finished(f) => (r.finish_mult(f.okey, f.elden, f.pairs), Some(f.player)),
             Outcome::DeckOut => (1, None),
         };
         let mut s = [0i32; 4];
         for p in 0..4u8 {
             let pl = &self.players[p as usize];
-            let base = if Some(p) == fin {
+            let base = if fin.is_some_and(|f| r.same_team(f, p)) {
                 r.score_finish
             } else {
-                match pl.opened {
-                    Opened::No => r.score_unopened + pl.hand[JOKER as usize] as i32 * r.joker_in_hand,
-                    Opened::Melds => hand_penalty(&pl.hand, r),
-                    Opened::Pairs => hand_penalty(&pl.hand, r) * r.pair_hand_mult,
-                }
+                r.hand_charge(pl.opened, hand_penalty(&pl.hand, r), pl.hand[JOKER as usize] as i32)
             };
             s[p as usize] = base * mult + pl.penalty;
-        }
-        if r.partners
-            && let Some(f) = fin
-        {
-            let m = partner(f);
-            s[m as usize] = r.score_finish * mult + self.players[m as usize].penalty;
         }
         s
     }

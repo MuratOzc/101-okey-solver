@@ -105,10 +105,6 @@ pub(crate) fn run_top(rules: &Rules, lo: u8) -> u8 {
 }
 
 impl Table {
-    pub fn tiles(&self) -> Vec<Tile> {
-        self.melds.iter().flat_map(|m| m.shape.tiles()).collect()
-    }
-
     pub fn new_turn(&mut self) {
         for m in &mut self.melds {
             m.added_lo = 0;
@@ -131,31 +127,21 @@ impl Table {
 
     pub fn attach(&self, rules: &Rules) -> Attach {
         let mut a = Attach::none();
-        let cap = rules.layoff_per_end;
         for m in &self.melds {
-            match m.shape {
-                Shape::Run { color, lo, hi, .. } => {
-                    if lo > 1 && m.added_lo < cap && !m.full(rules) {
-                        a.tile[pos_tile(color, lo - 1) as usize] = true;
-                        a.tile[JOKER as usize] = true;
-                    }
-                    if hi < run_top(rules, lo) && m.added_hi < cap && !m.full(rules) {
-                        a.tile[pos_tile(color, hi + 1) as usize] = true;
-                        a.tile[JOKER as usize] = true;
-                    }
-                }
-                Shape::Group { num, colors, jokers } if colors.count_ones() as u8 + jokers < 4 => {
-                    for c in 0..NCOLORS {
-                        if colors >> c & 1 == 0 {
-                            a.tile[id(c, num) as usize] = true;
-                        }
-                    }
-                    a.tile[JOKER as usize] = true;
-                }
-                _ => {}
-            }
+            m.each_option(rules, |o| a.tile[o.tile as usize] = true);
         }
         a
+    }
+
+    /// What throwing `t` costs a player who still holds tiles afterwards.
+    pub fn discard_penalty(&self, t: Tile, opened: bool, rules: &Rules) -> i32 {
+        if t == JOKER {
+            rules.penalty_discard_joker
+        } else if (opened || rules.islek_applies_unopened) && self.is_islek(t, rules) {
+            rules.penalty_islek
+        } else {
+            0
+        }
     }
 
     /// İşlek: a tile that fits a table meld regardless of this turn's lay-off counters.
@@ -285,56 +271,35 @@ impl Table {
 impl TableMeld {
     /// Every single tile that can be laid on this meld right now, and where.
     pub fn options(&self, rules: &Rules) -> Vec<LayOption> {
-        let cap = rules.layoff_per_end;
         let mut v = Vec::new();
+        self.each_option(rules, |o| v.push(o));
+        v
+    }
+
+    fn each_option(&self, rules: &Rules, mut found: impl FnMut(LayOption)) {
+        let cap = rules.layoff_per_end;
+        let mut fits = |tile, side, stands_for| found(LayOption { tile, side, stands_for });
         match self.shape {
             Shape::Run { color, lo, hi, .. } => {
                 if lo > 1 && self.added_lo < cap && !self.full(rules) {
                     let t = pos_tile(color, lo - 1);
-                    v.push(LayOption {
-                        tile: t,
-                        side: Side::Low,
-                        stands_for: t,
-                    });
-                    v.push(LayOption {
-                        tile: JOKER,
-                        side: Side::Low,
-                        stands_for: t,
-                    });
+                    fits(t, Side::Low, t);
+                    fits(JOKER, Side::Low, t);
                 }
                 if hi < run_top(rules, lo) && self.added_hi < cap && !self.full(rules) {
                     let t = pos_tile(color, hi + 1);
-                    v.push(LayOption {
-                        tile: t,
-                        side: Side::High,
-                        stands_for: t,
-                    });
-                    v.push(LayOption {
-                        tile: JOKER,
-                        side: Side::High,
-                        stands_for: t,
-                    });
+                    fits(t, Side::High, t);
+                    fits(JOKER, Side::High, t);
                 }
             }
             Shape::Group { num, colors, jokers } if colors.count_ones() as u8 + jokers < 4 => {
-                for c in 0..NCOLORS {
-                    if colors >> c & 1 == 0 {
-                        v.push(LayOption {
-                            tile: id(c, num),
-                            side: Side::Group,
-                            stands_for: id(c, num),
-                        });
-                    }
+                for c in (0..NCOLORS).filter(|c| colors >> c & 1 == 0) {
+                    fits(id(c, num), Side::Group, id(c, num));
                 }
-                v.push(LayOption {
-                    tile: JOKER,
-                    side: Side::Group,
-                    stands_for: JOKER,
-                });
+                fits(JOKER, Side::Group, JOKER);
             }
             _ => {}
         }
-        v
     }
 }
 

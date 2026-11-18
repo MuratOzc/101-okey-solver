@@ -213,6 +213,30 @@ pub struct Params {
     pub joker_runs: bool,
 }
 
+impl Params {
+    /// For the arrangement worth most as an opening.
+    pub fn open(must: Option<Tile>) -> Self {
+        Params {
+            mode: Mode::Open,
+            cover_w: 0,
+            must,
+            allow_melds: true,
+            pair_dump: false,
+            pair_cap: 0,
+            joker_runs: true,
+        }
+    }
+
+    /// For the arrangement that leaves the fewest points in hand.
+    pub fn cover(must: Option<Tile>) -> Self {
+        Params {
+            mode: Mode::Penalty,
+            cover_w: 1000,
+            ..Self::open(must)
+        }
+    }
+}
+
 /// Tiles that can be laid off onto the table as single tiles. Index JOKER means an okey fits somewhere.
 #[derive(Clone, Copy, Debug)]
 pub struct Attach {
@@ -316,15 +340,7 @@ impl Solver {
             key: 0,
             flag: false,
             dumps: 0,
-            p: Params {
-                mode: Mode::Open,
-                cover_w: 0,
-                must: None,
-                allow_melds: true,
-                pair_dump: false,
-                pair_cap: 0,
-                joker_runs: true,
-            },
+            p: Params::open(None),
             attach: Attach::none(),
             rules: rules.clone(),
         }

@@ -1,10 +1,10 @@
 //! Every legal thing a player can do in one turn, as explicit steps.
 
-use crate::game::{Game, Opened, Outcome, Step};
+use crate::game::{Game, Opened, Outcome};
 use crate::meld::{Shape, Solver, pos_tile};
 use crate::pairs::{guarded, pair_plan};
 use crate::rules::Rules;
-use crate::table::{JokerSlot, Side, TableMeld, run_top};
+use crate::table::{JokerSlot, Side, run_top};
 use crate::tile::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -54,35 +54,13 @@ impl Game {
         })
     }
 
-    fn place(&mut self, p: u8, owner: u8, shape: Shape) {
-        for t in shape.tiles() {
-            self.players[p as usize].hand[t as usize] -= 1;
-            self.seen[t as usize] += 1;
-        }
-        let mut meld = TableMeld::laid(owner, shape);
-        for _ in 0..shape.jokers() {
-            meld.okey_from(p, Side::Group);
-        }
-        self.table.melds.push(meld);
-        if let Some(log) = &mut self.log {
-            log.push(Step::Meld { shape, owner });
-        }
-    }
-
     /// Mark the player opened once this turn's melds reach the threshold.
     fn settle_opening(&mut self, p: u8, value: i32, pairs: u8) -> bool {
-        let r = &self.rules;
         if value > 0 && value >= self.meld_req {
-            self.players[p as usize].opened = Opened::Melds;
-            if r.katlamali {
-                self.meld_req = self.meld_req.max(value + r.raise_meld_by);
-            }
+            self.mark_opened(p, Opened::Melds, value);
             true
         } else if pairs > 0 && pairs >= self.pair_req {
-            self.players[p as usize].opened = Opened::Pairs;
-            if r.katlamali {
-                self.pair_req = self.pair_req.max(pairs + r.raise_pair_by);
-            }
+            self.mark_opened(p, Opened::Pairs, pairs as i32);
             true
         } else {
             false
@@ -163,20 +141,7 @@ impl Game {
                     self.players[pi].hand[*tile as usize] -= 1;
                     self.seen[*tile as usize] += 1;
                     used_taken |= taken == Some(*tile);
-                    if let Some(log) = &mut self.log {
-                        let stands_for = match (before.shape, side) {
-                            (Shape::Run { color, lo, .. }, Side::Low) => pos_tile(color, lo - 1),
-                            (Shape::Run { color, hi, .. }, Side::High) => pos_tile(color, hi + 1),
-                            _ => *tile,
-                        };
-                        log.push(Step::Layoff {
-                            tile: *tile,
-                            owner: before.owner,
-                            onto: before.shape.tiles(),
-                            side: *side,
-                            stands_for,
-                        });
-                    }
+                    self.log_layoff(&before, *tile, *side);
                 }
                 Act::Gift { owner, shape } => {
                     let tiles = shape.tiles();
@@ -460,7 +425,8 @@ impl Gen<'_> {
         }
     }
 
-    /// Lay-offs: any number of tiles on any melds, in one canonical order.
+    /// Lay-offs: any number of tiles on any melds, in one canonical order. From meld `idx` on;
+    /// `rank` and `last` say where on that meld the previous tile went, so a second one follows it.
     fn layoffs(&mut self, g: &Game, idx: usize, rank: u8, last: Tile, acts: &mut Vec<Act>) {
         if self.full() {
             return;
@@ -490,38 +456,7 @@ impl Gen<'_> {
                 continue;
             }
             acts.push(act);
-            self.layoffs_same(&g2, idx, r, o.tile, acts);
-            acts.pop();
-        }
-    }
-
-    /// Continue on the same meld (a second tile on an end) or move on.
-    fn layoffs_same(&mut self, g: &Game, idx: usize, rank: u8, last: Tile, acts: &mut Vec<Act>) {
-        if self.full() {
-            return;
-        }
-        self.layoffs(g, idx + 1, 0, 0, acts);
-        let side_rank = |s: Side| match s {
-            Side::Low => 0u8,
-            Side::High => 1,
-            Side::Group => 2,
-        };
-        for o in g.table.melds[idx].options(&g.rules) {
-            let r = side_rank(o.side);
-            if r < rank || (o.side == Side::Group && o.tile <= last) || g.players[self.p as usize].hand[o.tile as usize] == 0 {
-                continue;
-            }
-            let act = Act::Layoff {
-                meld: idx,
-                tile: o.tile,
-                side: o.side,
-            };
-            let mut g2 = g.clone();
-            if g2.play_acts(self.p, std::slice::from_ref(&act), None).is_err() {
-                continue;
-            }
-            acts.push(act);
-            self.layoffs_same(&g2, idx, r, o.tile, acts);
+            self.layoffs(&g2, idx, r, o.tile, acts);
             acts.pop();
         }
     }

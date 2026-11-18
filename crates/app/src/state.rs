@@ -1,4 +1,4 @@
-use okey_engine::analysis::{Decision, Phase, PlayerView, View};
+use okey_engine::analysis::{Decision, Phase, PlayerView, View, seen_tiles};
 use okey_engine::game::{Game, Opened, Outcome};
 use okey_engine::meld::{Shape, Solver, hand_penalty};
 use okey_engine::moves::Move;
@@ -174,37 +174,19 @@ impl State {
         }
         let r = &self.rules;
         let mult = self.finisher.map_or(1, |f| {
-            let mut m = 1;
-            if self.fin_okey {
-                m *= r.mult_okey_finish;
-            }
-            if self.fin_elden {
-                m *= r.mult_elden;
-            }
-            if self.players[f as usize].opened == Opened::Pairs {
-                m *= r.mult_pair_finish;
-            }
-            m
+            r.finish_mult(self.fin_okey, self.fin_elden, self.players[f as usize].opened == Opened::Pairs)
         });
         let mut out = [0; 4];
         for p in 0..4u8 {
-            let finished = self.finisher.is_some_and(|f| f == p || (r.partners && (f + 2) % 4 == p));
-            let pv = &self.players[p as usize];
-            let base = if finished {
+            let opened = self.players[p as usize].opened;
+            let base = if self.finisher.is_some_and(|f| r.same_team(f, p)) {
                 r.score_finish
             } else if p == 0 {
                 let c = counts_from(&self.hand);
-                match pv.opened {
-                    Opened::No => r.score_unopened + c[JOKER as usize] as i32 * r.joker_in_hand,
-                    Opened::Melds => hand_penalty(&c, r),
-                    Opened::Pairs => hand_penalty(&c, r) * r.pair_hand_mult,
-                }
+                r.hand_charge(opened, hand_penalty(&c, r), c[JOKER as usize] as i32)
             } else {
-                match pv.opened {
-                    Opened::No => r.score_unopened + self.okeys_left[p as usize] as i32 * r.joker_in_hand,
-                    Opened::Melds => self.left[p as usize]?,
-                    Opened::Pairs => self.left[p as usize]? * r.pair_hand_mult,
-                }
+                let left = if opened == Opened::No { 0 } else { self.left[p as usize]? };
+                r.hand_charge(opened, left, self.okeys_left[p as usize] as i32)
             };
             out[p as usize] = base * mult + self.penalties[p as usize];
         }
@@ -226,19 +208,7 @@ impl State {
     }
 
     pub fn seen(&self) -> Counts {
-        let mut c = counts_from(&self.hand);
-        if let Some(g) = self.gosterge {
-            c[g as usize] += 1;
-        }
-        for p in &self.players {
-            for &t in p.discards.iter().chain(&p.known) {
-                c[t as usize] += 1;
-            }
-        }
-        for t in self.table.tiles() {
-            c[t as usize] += 1;
-        }
-        c
+        seen_tiles(&self.hand, self.gosterge, &self.players, &self.table.melds)
     }
 
     /// Whether the player whose turn it is may lay tiles or discard (has drawn, or starts the hand).
@@ -446,12 +416,8 @@ impl State {
         let finishing = self.last_tile();
         let pen = if finishing {
             0
-        } else if t == JOKER {
-            self.rules.penalty_discard_joker
-        } else if (self.cur().opened != Opened::No || self.rules.islek_applies_unopened) && self.table.is_islek(t, &self.rules) {
-            self.rules.penalty_islek
         } else {
-            0
+            self.table.discard_penalty(t, self.cur().opened != Opened::No, &self.rules)
         };
         if !self.may_discard() {
             let progress = self.opening_progress().unwrap_or_default();
@@ -485,14 +451,10 @@ impl State {
     /// The reward for opening with many pairs, once the opening is complete.
     fn pay_big_pairs(&mut self) {
         let pv = self.cur();
-        if self.opened_this_turn
-            && !self.big_pairs_paid
-            && pv.opened == Opened::Pairs
-            && self.rules.big_pairs_penalty != 0
-            && pv.open_value >= self.rules.big_pairs_min as i32
-        {
-            self.penalties[self.turn as usize] -= self.rules.big_pairs_penalty;
-            self.big_pairs_paid = true;
+        if self.opened_this_turn && !self.big_pairs_paid && pv.opened == Opened::Pairs {
+            let reward = self.rules.big_pairs_reward(pv.open_value as u8);
+            self.penalties[self.turn as usize] -= reward;
+            self.big_pairs_paid = reward != 0;
         }
     }
 
@@ -539,21 +501,9 @@ impl State {
 
     /// What the current player's opening must reach: (meld points, pair count).
     pub fn opening_need(&self) -> (i32, u8) {
-        let r = &self.rules;
-        let (mut meld, mut pair) = (r.open_min, r.pair_min);
-        if r.katlamali {
-            for (i, p) in self.players.iter().enumerate() {
-                if i == self.turn as usize && self.opened_this_turn {
-                    continue;
-                }
-                match p.opened {
-                    Opened::Melds => meld = meld.max(p.open_value + r.raise_meld_by),
-                    Opened::Pairs => pair = pair.max(p.open_value as u8 + r.raise_pair_by),
-                    Opened::No => {}
-                }
-            }
-        }
-        (meld, pair)
+        let mine_in_progress = |i: usize| i == self.turn as usize && self.opened_this_turn;
+        let down = self.players.iter().enumerate().filter(|&(i, _)| !mine_in_progress(i));
+        self.rules.thresholds(down.map(|(_, p)| (p.opened, p.open_value)))
     }
 
     /// False while the current player has started opening this turn but is still short of the threshold.
@@ -727,13 +677,12 @@ impl State {
 
     /// Who would be charged if the current player took the okeys of this slot.
     pub fn okey_losers(&self, slot: &JokerSlot) -> Vec<u8> {
-        let mate = |p: u8| p == self.turn || (self.rules.partners && p == (self.turn + 2) % 4);
         let mut table = self.table.clone();
         table
             .swap_joker(slot, self.turn)
             .into_iter()
             .flatten()
-            .filter(|&p| !mate(p))
+            .filter(|&p| !self.rules.same_team(p, self.turn))
             .collect()
     }
 

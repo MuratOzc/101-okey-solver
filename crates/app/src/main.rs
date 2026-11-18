@@ -8,7 +8,7 @@ use okey_engine::analysis::{
 };
 use okey_engine::game::{Opened, Step};
 use okey_engine::meld::{Shape, pos_tile};
-use okey_engine::moves::{Act, Move};
+use okey_engine::moves::Move;
 use okey_engine::reads::{MAX_PAIRS, Now, Read, read_opponents};
 use okey_engine::table::{JokerSlot, LayOption, Side};
 use okey_engine::tile::*;
@@ -907,6 +907,18 @@ fn Rack() -> impl IntoView {
     }
 }
 
+/// Four rows of thirteen tiles, the okey closing the first.
+fn tile_grid(cell: impl Fn(Tile) -> AnyView) -> AnyView {
+    (0..4u8)
+        .map(|c| {
+            let tiles = (1..=13u8).map(|n| cell(id(c, n))).collect_view();
+            let extra = if c == 0 { cell(JOKER) } else { view! { <span></span> }.into_any() };
+            view! { {tiles} {extra} }
+        })
+        .collect_view()
+        .into_any()
+}
+
 fn picker_hint(s: &State) -> String {
     let who = seat_name(s, s.turn);
     match s.mode {
@@ -939,15 +951,11 @@ fn Picker() -> impl IntoView {
                             {tile_view(t, okey)}
                         </button>
                     }
+                    .into_any()
                 };
-                let rows = (0..4u8).map(|c| {
-                    let tiles = (1..=13u8).map(|n| cell(id(c, n))).collect_view();
-                    let extra = if c == 0 { cell(JOKER).into_any() } else { view! { <span></span> }.into_any() };
-                    view! { {tiles} {extra} }
-                }).collect_view();
                 view! {
                     <div class="picker-head">{picker_hint(&s)}</div>
-                    <div class="grid">{rows}</div>
+                    <div class="grid">{tile_grid(cell)}</div>
                 }
             }}
         </div>
@@ -1133,7 +1141,7 @@ fn over_panel(ctx: Ctx, s: &State) -> impl IntoView + use<> {
     });
     let rows = (0..4u8).map(|p| {
         let pv = &s.players[p as usize];
-        let finished = s.finisher.is_some_and(|f| f == p || (s.rules.partners && (f + 2) % 4 == p));
+        let finished = s.finisher.is_some_and(|f| s.rules.same_team(f, p));
         let score = scores.map(|x| x[p as usize].to_string()).unwrap_or_else(|| "?".into());
         let pen = s.penalties[p as usize];
         let what = if finished {
@@ -1251,17 +1259,22 @@ fn opp_act(ctx: Ctx, s: &State) -> impl IntoView + use<> {
     }
 }
 
+/// What the tiles picked so far amount to, or why they cannot be laid.
+fn buffer_status(s: &State, problem: &Option<String>) -> String {
+    match (problem, s.buffer_shape()) {
+        (None, Some(sh)) if sh.is_pair() => "Çift ✓".to_string(),
+        (None, Some(sh)) => format!("{} ✓ · {}", shape_label(&sh), s.points(sh.open_value(&s.rules))),
+        (Some(p), _) => p.clone(),
+        _ => String::new(),
+    }
+}
+
 fn meld_entry(ctx: Ctx, s: &State) -> impl IntoView + use<> {
     let who = seat_name(s, s.turn);
     let okey = okey_tile(s);
     let problem = s.meld_problem();
     let ok = problem.is_none();
-    let status = match (&problem, s.buffer_shape()) {
-        (None, Some(sh)) if sh.is_pair() => "Çift ✓".to_string(),
-        (None, Some(sh)) => format!("{} ✓ · {}", shape_label(&sh), s.points(sh.open_value(&s.rules))),
-        (Some(p), _) => p.clone(),
-        _ => String::new(),
-    };
+    let status = buffer_status(s, &problem);
     let total = s.opening_progress();
     let total_class = if s.opening_complete() { "good" } else { "warn" };
     let buffer = s.buffer.clone();
@@ -1361,13 +1374,10 @@ fn manual(ctx: Ctx, s: &State) -> impl IntoView + use<> {
     let n = s.buffer.len();
     let problem = s.meld_problem();
     let can_meld = problem.is_none() && n >= 2;
-    let status = match (n, &problem, s.buffer_shape()) {
-        (0, _, _) => "İstakadan taşlara dokun.".to_string(),
-        (1, _, _) => "Tek taş seçili: atabilirsin. İşlemek için masadaki pere dokun.".to_string(),
-        (_, None, Some(sh)) if sh.is_pair() => "Çift ✓".to_string(),
-        (_, None, Some(sh)) => format!("{} ✓ · {}", shape_label(&sh), s.points(sh.open_value(&s.rules))),
-        (_, Some(p), _) => p.clone(),
-        _ => String::new(),
+    let status = match n {
+        0 => "İstakadan taşlara dokun.".to_string(),
+        1 => "Tek taş seçili: atabilirsin. İşlemek için masadaki pere dokun.".to_string(),
+        _ => buffer_status(s, &problem),
     };
     let complete = s.opening_complete();
     let single = (n == 1 && s.may_discard()).then(|| s.buffer[0]);
@@ -1527,58 +1537,47 @@ fn MyDraw() -> impl IntoView {
     }
 }
 
-fn plan_title(steps: &[Step], s: &State) -> String {
-    let mut parts = Vec::new();
-    let melds: Vec<&Shape> = steps
-        .iter()
-        .filter_map(|x| {
-            if let Step::Meld { shape, owner: 0 } = x {
-                Some(shape)
-            } else {
-                None
-            }
-        })
-        .collect();
+/// A turn in a few words, from its steps.
+fn turn_title(steps: &[Step], s: &State) -> String {
     let unopened = s.players[0].opened == Opened::No;
-    if !melds.is_empty() {
-        let pairs = melds.iter().all(|m| m.is_pair());
-        if unopened && pairs {
-            parts.push(format!("Çiftle aç ({})", melds.len()));
-        } else if unopened {
-            let total: i32 = melds.iter().map(|m| m.open_value(&s.rules)).sum();
-            parts.push(format!("Aç ({})", s.total(total)));
-        } else {
-            parts.push(format!("{} per indir", melds.len()));
+    let (mut value, mut melds, mut pairs, mut gifts, mut swaps) = (0, 0, 0, 0, false);
+    let mut laid: Vec<Tile> = Vec::new();
+    let mut throw = None;
+    for step in steps {
+        match step {
+            Step::Meld { shape, owner: 0 } if shape.is_pair() => pairs += 1,
+            Step::Meld { shape, owner: 0 } => {
+                melds += 1;
+                value += shape.open_value(&s.rules);
+            }
+            Step::Meld { .. } => gifts += 1,
+            Step::Layoff { tile, .. } => laid.push(*tile),
+            Step::Swap { .. } => swaps = true,
+            Step::Discard { tile, finish } => throw = Some((*tile, *finish)),
         }
-    } else if unopened {
-        parts.push("Açma".into());
     }
-    let lays: Vec<Tile> = steps
-        .iter()
-        .filter_map(|x| if let Step::Layoff { tile, .. } = x { Some(*tile) } else { None })
-        .collect();
-    match lays.len() {
-        0 => {}
-        1 => parts.push(format!(
-            "{} işle",
-            if lays[0] == JOKER { "okeyi".to_string() } else { name(lays[0]) }
-        )),
-        n => parts.push(format!("{n} taş işle")),
+    let mut parts = Vec::new();
+    match (unopened, melds, pairs) {
+        (true, 0, 0) => parts.push("Açma".to_string()),
+        (true, 0, n) => parts.push(format!("{n} çiftle aç")),
+        (true, _, _) => parts.push(format!("Aç {}", s.total(value))),
+        (false, 0, 0) => {}
+        (false, 0, n) => parts.push(format!("{n} çift indir")),
+        (false, n, _) => parts.push(format!("{n} per indir")),
     }
-    if steps.iter().any(|x| matches!(x, Step::Swap { .. })) {
+    match laid[..] {
+        [] => {}
+        [t] => parts.push(format!("{} işle", if t == JOKER { "okeyi".to_string() } else { name(t) })),
+        _ => parts.push(format!("{} taş işle", laid.len())),
+    }
+    if swaps {
         parts.push("okey al".into());
     }
-    if steps.iter().any(|x| matches!(x, Step::Meld { owner, .. } if *owner != 0)) {
-        parts.push("çift işle".into());
+    if gifts > 0 {
+        parts.push(format!("{gifts} çift işle"));
     }
-    for x in steps {
-        if let Step::Discard { tile, finish } = x {
-            parts.push(if *finish {
-                format!("{} atıp bitir", name(*tile))
-            } else {
-                format!("{} at", name(*tile))
-            });
-        }
+    if let Some((t, finish)) = throw {
+        parts.push(format!("{} {}", name(t), if finish { "atıp bitir" } else { "at" }));
     }
     parts.join(" · ")
 }
@@ -1690,10 +1689,7 @@ fn Plan() -> impl IntoView {
             ("Kesinleşti".to_string(), "done")
         };
         let steps = ctx.steps.get().unwrap_or_default();
-        let title = match &mv {
-            Some(m) => move_short(m, &s),
-            None => plan_title(&steps, &s),
-        };
+        let title = turn_title(&steps, &s);
         let stats = cand.as_ref().map(|c| {
             let mut lines = Vec::new();
             if let Some(w) = c.p_win {
@@ -1755,69 +1751,6 @@ fn Plan() -> impl IntoView {
     }
 }
 
-fn move_short(mv: &Move, s: &State) -> String {
-    let unopened = s.players[0].opened == Opened::No;
-    let (mut value, mut melds, mut pairs, mut gifts, mut swaps) = (0, 0, 0, 0, false);
-    let mut laid: Vec<Tile> = Vec::new();
-    let mut left = s.hand.len() as i32 - 1;
-    for act in &mv.acts {
-        match act {
-            Act::Meld(sh) if sh.is_pair() => {
-                pairs += 1;
-                left -= 2;
-            }
-            Act::Meld(sh) => {
-                melds += 1;
-                value += sh.open_value(&s.rules);
-                left -= sh.len() as i32;
-            }
-            Act::Layoff { tile, .. } => {
-                laid.push(*tile);
-                left -= 1;
-            }
-            Act::Swap(slot) => {
-                swaps = true;
-                left += slot.jokers as i32 - slot.tiles.len() as i32;
-            }
-            Act::Gift { .. } => {
-                gifts += 1;
-                left -= 2;
-            }
-        }
-    }
-    let mut parts = Vec::new();
-    match (unopened, melds, pairs) {
-        (true, 0, 0) => parts.push("Açma".to_string()),
-        (true, 0, n) => parts.push(format!("{n} çiftle aç")),
-        (true, _, _) => parts.push(format!("Aç {}", s.total(value))),
-        (false, 0, 0) => {}
-        (false, 0, n) => parts.push(format!("{n} çift indir")),
-        (false, n, _) => parts.push(format!("{n} per indir")),
-    }
-    match laid[..] {
-        [] => {}
-        [t] => parts.push(format!("{} işle", if t == JOKER { "okeyi".to_string() } else { name(t) })),
-        _ => parts.push(format!("{} taş işle", laid.len())),
-    }
-    if swaps {
-        parts.push("okey al".into());
-    }
-    if gifts > 0 {
-        parts.push(format!("{gifts} çift işle"));
-    }
-    let tile = if mv.discard == JOKER {
-        "Okey".to_string()
-    } else {
-        name(mv.discard)
-    };
-    parts.push(if left == 0 {
-        format!("{tile} atıp bitir")
-    } else {
-        format!("{tile} at")
-    });
-    parts.join(" · ")
-}
-
 fn alternatives(ctx: Ctx, report: &Report, s: &State) -> impl IntoView + use<> {
     let Some(top) = report.candidates.first().cloned() else {
         return ().into_any();
@@ -1833,13 +1766,14 @@ fn alternatives(ctx: Ctx, report: &Report, s: &State) -> impl IntoView + use<> {
     if rows.len() < 2 {
         return ().into_any();
     }
+    let view = s.view();
     let mut seen: Vec<String> = Vec::new();
     let labels: Vec<String> = rows
         .iter()
         .map(|c| {
-            let label = match &c.mv {
-                Some(mv) => move_short(mv, s),
-                None => c.label.clone(),
+            let label = match (&c.mv, &view) {
+                (Some(mv), Some(v)) => turn_title(&describe_move(v, mv), s),
+                _ => c.label.clone(),
             };
             let again = seen.contains(&label);
             seen.push(label.clone());
@@ -2253,12 +2187,10 @@ fn Unseen() -> impl IntoView {
         let okey = okey_tile(&s);
         let left = |t: Tile| 2u8.saturating_sub(seen[t as usize]);
         let total: u32 = (0..NIDS).map(|i| left(i as Tile) as u32).sum();
-        let cell = |t: Tile| view! { <span class="ucell" class:none={left(t) == 0}>{tile_view(t, okey)}<sub>{left(t)}</sub></span> };
+        let cell = |t: Tile| view! { <span class="ucell" class:none={left(t) == 0}>{tile_view(t, okey)}<sub>{left(t)}</sub></span> }.into_any();
         view! {
             <p class="muted">{format!("Toplam {total} taş (rakiplerin eli + deste)")}</p>
-            <div class="ugrid">
-                {(0..4u8).map(|c| view! { {(1..=13u8).map(|n| cell(id(c, n))).collect_view()} {if c == 0 { cell(JOKER).into_any() } else { view! { <span></span> }.into_any() }} }).collect_view()}
-            </div>
+            <div class="ugrid">{tile_grid(cell)}</div>
         }
     }
 }

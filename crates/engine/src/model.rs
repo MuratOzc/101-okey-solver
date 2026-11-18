@@ -1,7 +1,7 @@
 use crate::agent::Agent;
 use crate::features::{Feat, Moment, encode};
-use crate::game::{Game, OpenChoice, Outcome};
-use crate::meld::{Shape, Solver};
+use crate::game::{Game, MAX_TURNS, OpenChoice, Outcome};
+use crate::meld::Solver;
 use crate::net::{Near, Net};
 use crate::policy::Policy;
 use crate::tile::*;
@@ -20,22 +20,8 @@ pub fn written3(g: &Game, me: u8) -> i32 {
 }
 
 pub fn turns(g: &Game, sv: &mut Solver, p: u8, taken: Option<Tile>, discards: usize) -> Vec<Turn> {
-    let pi = p as usize;
     let mut out = Vec::new();
-    let mut seen: Vec<(Counts, Vec<(u8, Shape)>, i32, bool)> = Vec::new();
-    for choice in Game::plan_choices(g.players[pi].opened) {
-        let mut a = g.clone();
-        let Ok(end) = a.apply_choice(sv, p, choice, taken) else { continue };
-        let key = (
-            a.players[pi].hand,
-            a.table.melds.iter().map(|m| (m.owner, m.shape)).collect::<Vec<_>>(),
-            a.players.iter().map(|pl| pl.penalty).sum::<i32>(),
-            end.is_some(),
-        );
-        if seen.contains(&key) {
-            continue;
-        }
-        seen.push(key);
+    for (choice, a, end) in g.plan_positions(sv, p, taken) {
         if end.is_some() {
             out.push(Turn {
                 choice,
@@ -48,9 +34,7 @@ pub fn turns(g: &Game, sv: &mut Solver, p: u8, taken: Option<Tile>, discards: us
         if a.hand_len(p) < 2 {
             continue;
         }
-        let mut ranked = a.discard_scores(sv, p);
-        ranked.sort_by_key(|&(_, keep)| keep);
-        for (t, _) in ranked.into_iter().take(discards) {
+        for t in a.best_discards(sv, p, discards) {
             let mut b = a.clone();
             b.discard(p, t);
             b.current = (p + 1) % 4;
@@ -161,7 +145,7 @@ pub fn model_turn_valued(g: &mut Game, sv: &mut Solver, net: &Net, first: bool) 
 /// expects of the position it then stands in. A hand that ends sooner, or a horizon of 0, gives the outcome.
 pub fn play_out_to(g: &mut Game, sv: &mut Solver, net: &Net, model: [bool; 4], me: u8, horizon: u8) -> Result<Outcome, f32> {
     let mut left = horizon;
-    for _ in 0..400 {
+    for _ in 0..MAX_TURNS {
         let p = g.current;
         let end = if p == me && left > 0 {
             let (end, v) = model_turn_valued(g, sv, net, false);
@@ -183,17 +167,7 @@ pub fn play_out_to(g: &mut Game, sv: &mut Solver, net: &Net, model: [bool; 4], m
 }
 
 pub fn play_out_with(g: &mut Game, sv: &mut Solver, net: &Net, model: [bool; 4]) -> Outcome {
-    for _ in 0..400 {
-        let end = if model[g.current as usize] {
-            model_turn(g, sv, net, false)
-        } else {
-            g.bot_turn(sv)
-        };
-        if let Some(end) = end {
-            return end;
-        }
-    }
-    Outcome::DeckOut
+    play_out_to(g, sv, net, model, 0, 0).unwrap_or(Outcome::DeckOut)
 }
 
 pub struct ModelAgent {

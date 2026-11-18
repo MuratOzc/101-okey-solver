@@ -80,8 +80,7 @@ impl Agent for OracleAgent {
                 if mine.bot_wants_take(sv, 0) {
                     taken = Some(mine.take_top(0));
                 } else {
-                    let t = mine.deck.pop().expect("checked");
-                    mine.players[0].hand[t as usize] += 1;
+                    mine.draw(0);
                 }
             }
             mine.lookahead_act(sv, 0, taken, self.depth)
@@ -151,10 +150,9 @@ pub fn search_turn(
     if !first {
         match decide(g, Phase::BeforeDraw, None, iterations, seed, opts, help).0 {
             Some(Decision::Take) => taken = Some(g.take_top(0)),
-            _ => match g.deck.pop() {
-                Some(t) => g.players[0].hand[t as usize] += 1,
-                None => return Some(Outcome::DeckOut),
-            },
+            _ => {
+                g.draw(0);
+            }
         }
     }
     let (picked, mv) = decide(g, Phase::AfterDraw, taken, iterations, seed ^ 0x55, opts, help);
@@ -163,10 +161,7 @@ pub fn search_turn(
         (Some(Decision::Play(_)), Some(mv)) => g.play_move(0, &mv, taken),
         (Some(Decision::Act { choice, discard }), _) => g.apply_choice(sv, 0, choice, taken).inspect(|r| {
             if r.is_none() {
-                let t = discard
-                    .filter(|&t| g.players[0].hand[t as usize] > 0)
-                    .unwrap_or_else(|| g.bot_discard(sv, 0));
-                g.discard(0, t);
+                g.discard_or_bot(sv, 0, discard);
             }
         }),
         _ => Err(()),

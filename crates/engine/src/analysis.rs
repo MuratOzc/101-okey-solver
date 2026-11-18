@@ -37,6 +37,20 @@ impl Default for PlayerView {
     }
 }
 
+/// How many copies of each tile the holder of `hand` has seen: the hand, the gösterge, every
+/// discard and shown tile, and the table.
+pub fn seen_tiles(hand: &[Tile], gosterge: Option<Tile>, players: &[PlayerView], table: &[TableMeld]) -> Counts {
+    let mut c = [0u8; NIDS];
+    let shown = players.iter().flat_map(|p| p.discards.iter().chain(&p.known));
+    for &t in hand.iter().chain(&gosterge).chain(shown) {
+        c[t as usize] = c[t as usize].saturating_add(1);
+    }
+    for t in table.iter().flat_map(|m| m.shape.tiles()) {
+        c[t as usize] = c[t as usize].saturating_add(1);
+    }
+    c
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Phase {
     BeforeDraw,
@@ -68,34 +82,11 @@ impl View {
     }
 
     pub fn requirements(&self) -> (i32, u8) {
-        let r = &self.rules;
-        let mut meld = r.open_min;
-        let mut pair = r.pair_min;
-        if r.katlamali {
-            for p in &self.players {
-                match p.opened {
-                    Opened::Melds => meld = meld.max(p.open_value + r.raise_meld_by),
-                    Opened::Pairs => pair = pair.max(p.open_value as u8 + r.raise_pair_by),
-                    Opened::No => {}
-                }
-            }
-        }
-        (meld, pair)
+        self.rules.thresholds(self.players.iter().map(|p| (p.opened, p.open_value)))
     }
 
     pub fn seen(&self) -> Counts {
-        let mut c = [0u8; NIDS];
-        let mut add = |t: Tile| c[t as usize] = c[t as usize].saturating_add(1);
-        self.hand.iter().for_each(|&t| add(t));
-        add(self.gosterge);
-        for p in &self.players {
-            p.discards.iter().for_each(|&t| add(t));
-            p.known.iter().for_each(|&t| add(t));
-        }
-        for m in &self.table {
-            m.shape.tiles().into_iter().for_each(&mut add);
-        }
-        c
+        seen_tiles(&self.hand, Some(self.gosterge), &self.players, &self.table)
     }
 
     pub fn unseen(&self) -> Counts {
@@ -1133,46 +1124,24 @@ fn play_decision_on(view: &View, mut g: Game, sv: &mut Solver, d: Decision, dept
     let mut out = None;
     let mut rest = depth;
     match d {
-        Decision::Draw => match g.draw(0) {
-            Some(_) => {
-                out = match ai {
-                    Some(ai) => model_act(&mut g, sv, ai.net, None),
-                    None if depth > 0 => g.lookahead_act(sv, 0, None, depth - 1),
-                    None => g.bot_act(sv, 0, None),
-                };
-                rest = depth.saturating_sub(1);
+        Decision::Draw | Decision::Take if g.deck.is_empty() => out = Some(Outcome::DeckOut),
+        Decision::Draw | Decision::Take => {
+            let taken = (d == Decision::Take).then(|| g.take_top(0));
+            if taken.is_none() {
+                g.draw(0);
             }
-            None => out = Some(Outcome::DeckOut),
-        },
-        Decision::Take if g.deck.is_empty() => out = Some(Outcome::DeckOut),
-        Decision::Take => {
-            let t = g.take_top(0);
             out = match ai {
-                Some(ai) => model_act(&mut g, sv, ai.net, Some(t)),
-                None if depth > 0 => g.lookahead_act(sv, 0, Some(t), depth - 1),
-                None => g.bot_act(sv, 0, Some(t)),
+                Some(ai) => model_act(&mut g, sv, ai.net, taken),
+                None if depth > 0 => g.lookahead_act(sv, 0, taken, depth - 1),
+                None => g.bot_act(sv, 0, taken),
             };
             rest = depth.saturating_sub(1);
         }
-        Decision::Play(_) => {
-            let t = g.bot_discard(sv, 0);
-            g.discard(0, t);
-        }
+        Decision::Play(_) => g.discard_or_bot(sv, 0, None),
         Decision::Act { choice, discard } => match g.apply_choice(sv, 0, choice, view.taken) {
             Ok(Some(o)) => out = Some(o),
-            Ok(None) => {
-                let t = discard.unwrap_or_else(|| g.bot_discard(sv, 0));
-                if g.players[0].hand[t as usize] > 0 {
-                    g.discard(0, t);
-                } else {
-                    let t = g.bot_discard(sv, 0);
-                    g.discard(0, t);
-                }
-            }
-            Err(()) => {
-                let t = g.bot_discard(sv, 0);
-                g.discard(0, t);
-            }
+            Ok(None) => g.discard_or_bot(sv, 0, discard),
+            Err(()) => g.discard_or_bot(sv, 0, None),
         },
     }
     conclude(view, g, out, sv, rest, ai)
@@ -1182,8 +1151,7 @@ fn play_move_on(view: &View, mut g: Game, sv: &mut Solver, mv: &Move, depth: u8,
     let out = match g.play_move(0, mv, view.taken) {
         Ok(o) => o,
         Err(()) => {
-            let t = g.bot_discard(sv, 0);
-            g.discard(0, t);
+            g.discard_or_bot(sv, 0, None);
             None
         }
     };
@@ -1287,27 +1255,12 @@ pub fn candidates(view: &View, sv: &mut Solver, opts: &Options) -> Vec<Decision>
             }
         }
         Phase::AfterDraw => {
-            let mut seen_positions: Vec<String> = Vec::new();
-            for choice in Game::plan_choices(g.players[0].opened) {
-                let mut g2 = g.clone();
-                let Ok(res) = g2.apply_choice(sv, 0, choice, view.taken) else {
-                    continue;
+            for (choice, after, end) in g.plan_positions(sv, 0, view.taken) {
+                let discards: Vec<Option<Tile>> = match end {
+                    Some(_) => vec![None],
+                    None => after.best_discards(sv, 0, opts.max_discards).into_iter().map(Some).collect(),
                 };
-                let key = format!("{:?}|{:?}|{}|{:?}", g2.players[0].hand, g2.table.melds, g2.players[0].penalty, res);
-                if seen_positions.contains(&key) {
-                    continue;
-                }
-                seen_positions.push(key);
-                match res {
-                    Some(_) => out.push(Decision::Act { choice, discard: None }),
-                    None => {
-                        let mut scores = g2.discard_scores(sv, 0);
-                        scores.sort_by_key(|&(_, s)| s);
-                        for (t, _) in scores.into_iter().take(opts.max_discards) {
-                            out.push(Decision::Act { choice, discard: Some(t) });
-                        }
-                    }
-                }
+                out.extend(discards.into_iter().map(|discard| Decision::Act { choice, discard }));
             }
         }
     }

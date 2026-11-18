@@ -18,15 +18,7 @@ fn hand(s: &str) -> Counts {
 fn open_value(h: &str) -> i32 {
     let r = Rules::default();
     let mut sv = Solver::new(&r);
-    let p = Params {
-        mode: Mode::Open,
-        cover_w: 0,
-        must: None,
-        allow_melds: true,
-        pair_dump: false,
-        pair_cap: 0,
-        joker_runs: true,
-    };
+    let p = Params::open(None);
     sv.run(&hand(h), p, None).map_or(0, |p| p.open_value(&r))
 }
 
@@ -64,15 +56,7 @@ fn ace_after_king_option() {
         ..Rules::default()
     };
     let mut sv = Solver::new(&r);
-    let p = Params {
-        mode: Mode::Open,
-        cover_w: 0,
-        must: None,
-        allow_melds: true,
-        pair_dump: false,
-        pair_cap: 0,
-        joker_runs: true,
-    };
+    let p = Params::open(None);
     let plan = sv.run(&hand("K12 K13 K1"), p, None).unwrap();
     assert_eq!(plan.open_value(&r), 26);
 }
@@ -81,15 +65,7 @@ fn ace_after_king_option() {
 fn must_use_constraint() {
     let r = Rules::default();
     let mut sv = Solver::new(&r);
-    let p = Params {
-        mode: Mode::Open,
-        cover_w: 0,
-        must: Some(t("K9")),
-        allow_melds: true,
-        pair_dump: false,
-        pair_cap: 0,
-        joker_runs: true,
-    };
+    let p = Params::open(Some(t("K9")));
     assert!(sv.run(&hand("K9 M1 M2 M3"), p, None).is_none());
     let plan = sv.run(&hand("K9 M9 S9 M1 M2 M3"), p, None).unwrap();
     assert!(plan.melds.iter().any(|m| m.uses(t("K9"))));
@@ -99,15 +75,7 @@ fn must_use_constraint() {
 fn penalty_mode_minimizes_deadwood() {
     let r = Rules::default();
     let mut sv = Solver::new(&r);
-    let p = Params {
-        mode: Mode::Penalty,
-        cover_w: 1000,
-        must: None,
-        allow_melds: true,
-        pair_dump: false,
-        pair_cap: 0,
-        joker_runs: true,
-    };
+    let p = Params::cover(None);
     let plan = sv.run(&hand("K3 K4 K5 M9 Si13"), p, None).unwrap();
     let mut rest = plan.rest.clone();
     rest.sort();
@@ -537,20 +505,8 @@ fn quick_bounds_never_contradict_the_search() {
             ..Rules::default()
         };
         let mut sv = Solver::new(&rules);
-        let open = Params {
-            mode: Mode::Open,
-            cover_w: 0,
-            must: None,
-            allow_melds: true,
-            pair_dump: false,
-            pair_cap: 0,
-            joker_runs: true,
-        };
-        let cover = Params {
-            mode: Mode::Penalty,
-            cover_w: 1000,
-            ..open
-        };
+        let open = Params::open(None);
+        let cover = Params::cover(None);
         for seed in 0..1500u64 {
             let g = Game::deal(&rules, &mut Rng::new(seed), 0);
             for p in 0..4 {
@@ -581,15 +537,7 @@ fn split_search_matches_the_whole_search() {
         };
         let mut split = Solver::new(&rules);
         let mut whole = Solver::new(&rules);
-        let open = Params {
-            mode: Mode::Open,
-            cover_w: 0,
-            must: None,
-            allow_melds: true,
-            pair_dump: false,
-            pair_cap: 0,
-            joker_runs: true,
-        };
+        let open = Params::open(None);
         let mut compared = 0;
         for seed in 0..700u64 {
             let g = Game::deal(&rules, &mut Rng::new(seed), 0);
@@ -608,17 +556,8 @@ fn split_search_matches_the_whole_search() {
                         must: Some(some_tile),
                         ..open
                     },
-                    Params {
-                        mode: Mode::Penalty,
-                        cover_w: 1000,
-                        ..open
-                    },
-                    Params {
-                        mode: Mode::Penalty,
-                        cover_w: 1000,
-                        must: Some(some_tile),
-                        ..open
-                    },
+                    Params::cover(None),
+                    Params::cover(Some(some_tile)),
                 ] {
                     for att in [None, Some(&attach)] {
                         let a = split.run(&hand, params, att);
@@ -648,20 +587,8 @@ fn split_search_matches_the_whole_search() {
 fn neighbour_bounds_never_contradict_the_search() {
     let rules = Rules::default();
     let mut sv = Solver::new(&rules);
-    let open = Params {
-        mode: Mode::Open,
-        cover_w: 0,
-        must: None,
-        allow_melds: true,
-        pair_dump: false,
-        pair_cap: 0,
-        joker_runs: true,
-    };
-    let cover = Params {
-        mode: Mode::Penalty,
-        cover_w: 1000,
-        ..open
-    };
+    let open = Params::open(None);
+    let cover = Params::cover(None);
     let mut rng = Rng::new(5);
     let mut tight = 0;
     for seed in 0..600u64 {
