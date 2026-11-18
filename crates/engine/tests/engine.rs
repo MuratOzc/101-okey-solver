@@ -764,6 +764,14 @@ fn opponent_reads_are_exact_for_a_known_hand_and_sum_to_one() {
         assert!(r.p_finish_soon <= r.p_finish_end + 1e-6);
         assert!(r.p_open_end > 0.0, "with a full deck left somebody's opening must show up");
     }
+
+    let mut late = sample_view(Phase::AfterDraw);
+    late.deck_count = 3;
+    let reads = read_opponents(&late, now, 200, 3);
+    assert!(
+        reads.iter().any(|r| r.p_open_soon > 0.0),
+        "after my discard the others still play before my next turn"
+    );
 }
 
 #[test]

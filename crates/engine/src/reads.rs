@@ -48,6 +48,7 @@ pub struct Read {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Now {
     pub seat: u8,
+    /// The player on turn already holds the tile to act with: drawn, taken, or the starter's extra one.
     pub drawn: bool,
     /// The tile the player on turn took from the side, which must be used.
     pub taken: Option<Tile>,
@@ -60,7 +61,11 @@ fn play_ahead(g: &mut Game, sv: &mut Solver, now: Now) -> [[bool; 4]; 3] {
     let mut out = [[false; 4]; 3];
     let mut soon = true;
     let mut res = if now.drawn {
-        g.bot_act(sv, now.seat, now.taken)
+        let res = g.bot_act(sv, now.seat, now.taken);
+        if res.is_none() {
+            g.current = (now.seat + 1) % 4;
+        }
+        res
     } else {
         g.top = g.last[((now.seat + 3) % 4) as usize];
         g.bot_turn(sv)

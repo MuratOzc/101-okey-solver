@@ -460,7 +460,7 @@ fn App() -> impl IntoView {
     let now_key = Memo::new(move |_| {
         st.with(|s| Now {
             seat: s.turn,
-            drawn: s.drawn,
+            drawn: s.may_act(),
             taken: s.taken,
         })
     });
