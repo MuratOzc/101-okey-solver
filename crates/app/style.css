@@ -386,6 +386,7 @@ button.grp.on { outline: 2.5px solid var(--cur); background: rgba(250, 204, 21, 
 .panel h2 { margin: 0; font-size: 1.2rem; line-height: 1.25; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .sub { margin: -6px 0 0; font-size: 0.867rem; color: var(--panel-muted); }
 .sub:empty { display: none; }
+.sub .line { display: block; }
 .muted { margin: 0; font-size: 0.8rem; color: var(--panel-muted); }
 .btn {
   display: flex;

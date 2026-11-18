@@ -1401,9 +1401,9 @@ fn find(r: &Report, d: Decision) -> Option<&CandReport> {
 fn advantage(c: &CandReport) -> String {
     let lead = -c.gap;
     if lead >= 0.0 {
-        format!("rakiplerden {lead:.0} puan önde")
+        format!("Rakiplere göre: +{lead:.0} puan")
     } else {
-        format!("rakiplerden {:.0} puan geride", -lead)
+        format!("Rakiplere göre: −{:.0} puan", -lead)
     }
 }
 
@@ -1415,26 +1415,33 @@ fn last_if_all_draw(deck: u8, i_draw: bool) -> Option<u8> {
     Some(((first + deck as u32 - 1) % 4) as u8)
 }
 
-fn last_line(s: &State, c: &CandReport) -> String {
+fn last_lines(s: &State, c: &CandReport) -> Vec<String> {
     let p = c.p_last_draw;
+    let before = format!("El ondan önce biter: {}", pct(1.0 - p.iter().sum::<f64>()));
     if s.rules.partners {
-        format!(
-            "biz {} (ben {}, eşim {}) · onlar {}",
-            pct(p[0] + p[2]),
-            pct(p[0]),
-            pct(p[2]),
-            pct(p[1] + p[3])
-        )
-    } else {
-        let mut order: Vec<usize> = (0..4).collect();
-        order.sort_by(|&a, &b| p[b].total_cmp(&p[a]));
-        order
-            .iter()
-            .filter(|&&i| p[i] >= 0.005)
-            .map(|&i| format!("{} {}", seat_name(s, i as u8), pct(p[i])))
-            .collect::<Vec<_>>()
-            .join(" · ")
+        return vec![
+            format!(
+                "Son taşı sizin takım çeker: {} (sen {}, eşin {})",
+                pct(p[0] + p[2]),
+                pct(p[0]),
+                pct(p[2])
+            ),
+            format!("Karşı takım çeker: {}", pct(p[1] + p[3])),
+            before,
+        ];
     }
+    let mut order: Vec<usize> = (0..4).collect();
+    order.sort_by(|&a, &b| p[b].total_cmp(&p[a]));
+    let mut lines: Vec<String> = order
+        .iter()
+        .filter(|&&i| p[i] >= 0.005)
+        .map(|&i| {
+            let who = if i == 0 { "Sen".to_string() } else { seat_name(s, i as u8) };
+            format!("Son taşı {who} çeker: {}", pct(p[i]))
+        })
+        .collect();
+    lines.push(before);
+    lines
 }
 
 #[component]
@@ -1461,7 +1468,7 @@ fn MyDraw() -> impl IntoView {
         let sub = match (&draw, &take) {
             (Some(d), Some(t)) => match d.p_win.zip(t.p_win) {
                 Some((dw, tw)) => format!("Maçı kazanma {} · diğeri {}", chance(dw.max(tw)), chance(dw.min(tw))),
-                None => format!("Diğerinden {:.1} puan daha iyi", (d.mean - t.mean).abs()),
+                None => format!("Öbür seçenekten ortalama {:.1} puan daha iyi", (d.mean - t.mean).abs()),
             },
             (Some(_), None) if side.is_some() && !take_ok => "Yandaki taşı bu tur kullanamazsın, alınamaz.".to_string(),
             _ => String::new(),
@@ -1481,17 +1488,15 @@ fn MyDraw() -> impl IntoView {
             let draw_last = last_if_all_draw(s.deck_count, true).map(|p| seat_name(&s, p));
             let row = |label: &'static str, last: Option<String>, c: Option<&CandReport>| {
                 let sim = c.filter(|c| c.whole >= ENOUGH_ENDINGS).map(|c| {
-                    let reach: f64 = c.p_last_draw.iter().sum();
-                    format!(
-                        "Simülasyonda: {} · {} ihtimalle el ondan önce biter",
-                        last_line(&s, c),
-                        pct(1.0 - reach)
-                    )
+                    last_lines(&s, c)
+                        .into_iter()
+                        .map(|l| view! { <span class="muted">{l}</span> })
+                        .collect_view()
                 });
                 view! {
                     <div class="lt-row">
                         <span>{label}": herkes desteden çekerse son taş "<b>{last.unwrap_or_default()}</b></span>
-                        {sim.map(|x| view! { <span class="muted">{x}</span> })}
+                        {sim}
                     </div>
                 }
             };
@@ -1693,16 +1698,19 @@ fn Plan() -> impl IntoView {
             None => plan_title(&steps, &s),
         };
         let stats = cand.as_ref().map(|c| {
-            let aim = match c.p_win {
-                Some(w) => format!("maçı kazanma {} · bu elde {}", chance(w), advantage(c)),
-                None => advantage(c),
-            };
-            let finish = if c.whole >= ENOUGH_ENDINGS {
-                format!(" · bitirme {}", pct(c.p_finish))
-            } else {
-                String::new()
-            };
-            format!("{aim}{finish} · sağdaki attığını alır {}", pct(c.p_next_takes))
+            let mut lines = Vec::new();
+            if let Some(w) = c.p_win {
+                lines.push(format!("Maçı kazanma ihtimalin: {}", chance(w)));
+            }
+            lines.push(advantage(c));
+            if c.whole >= ENOUGH_ENDINGS {
+                if s.players[0].opened == Opened::No {
+                    lines.push(format!("Açma ihtimalin: {}", pct(c.p_open)));
+                }
+                lines.push(format!("Bitirme ihtimalin: {}", pct(c.p_finish)));
+            }
+            lines.push(format!("Taşını sağdaki alır: {}", pct(c.p_next_takes)));
+            lines.into_iter().map(|l| view! { <span class="line">{l}</span> }).collect_view()
         });
         let model_on = s.model && s.view().is_some_and(|v| model_fits(&v, v.rules.partners));
         let status = resp.as_ref().zip(report.as_ref()).map(|(r, rep)| {
@@ -1853,8 +1861,8 @@ fn alternatives(ctx: Ctx, report: &Report, s: &State) -> impl IntoView + use<> {
                     (Some(w), Some(_)) => chance(w),
                     _ if d == top.decision => "önerilen".to_string(),
                     _ if behind < 0.05 => "eşit".to_string(),
-                    _ if c.alive => format!("{behind:.1} puan geride"),
-                    _ => format!("{behind:.0} puan geride"),
+                    _ if c.alive => format!("önerilenden {behind:.1} puan kötü"),
+                    _ => format!("önerilenden {behind:.0} puan kötü"),
                 };
                 view! {
                     <button class="bar-row alt" class:best={picked == d} on:click=move |_| ctx.pick.set(Some((d, mv.clone())))>
@@ -2079,21 +2087,24 @@ fn pairs_text(dist: &[f32]) -> String {
 fn read_lines(r: &Read, s: &State) -> Vec<String> {
     match r.opened {
         Opened::No => {
-            let odds = if no_turn_left(s, r.seat) {
-                "sırası gelmeyecek".to_string()
+            let hand = if s.rules.pairs_enabled {
+                format!("açılışı {}–{} · {}", s.total(r.per[0]), s.total(r.per[2]), pairs_text(&r.pairs))
             } else {
-                format!("açar {} · sonuna {}", share(r.p_open_soon), share(r.p_open_end))
+                format!("açılışı {}–{}", s.total(r.per[0]), s.total(r.per[2]))
             };
-            let mut lines = vec![format!("per {}–{}", s.total(r.per[0]), s.total(r.per[2]))];
-            if s.rules.pairs_enabled {
-                lines.push(pairs_text(&r.pairs));
+            if no_turn_left(s, r.seat) {
+                return vec![hand, "sırası gelmeyecek, açamaz".to_string()];
             }
-            lines.push(odds);
-            lines
+            vec![
+                hand,
+                format!("sıran gelmeden açar {}", share(r.p_open_soon)),
+                format!("el bitmeden açar {}", share(r.p_open_end)),
+            ]
         }
         _ => vec![
             format!("elinde {}–{} puan{}", r.points[0], r.points[2], okey_share(r)),
-            format!("biter {} · sonuna {}", share(r.p_finish_soon), share(r.p_finish_end)),
+            format!("sıran gelmeden biter {}", share(r.p_finish_soon)),
+            format!("el bitmeden biter {}", share(r.p_finish_end)),
         ],
     }
 }
@@ -2105,7 +2116,7 @@ fn no_turn_left(s: &State, seat: u8) -> bool {
 
 fn finish_odds(r: &Read) -> String {
     format!(
-        "Bitirir: sıra sana gelmeden {} · el bitene kadar {}",
+        "Bitirme ihtimali: sana sıra gelmeden {}, el bitene kadar {}",
         share(r.p_finish_soon),
         share(r.p_finish_end)
     )
@@ -2184,26 +2195,25 @@ fn Reads() -> impl IntoView {
                         let odds = if no_turn_left(&s, r.seat) {
                             "Deste bitti, el sırası ona gelmeden bitecek: açamaz.".to_string()
                         } else {
-                            let ready = if s.rules.pairs_enabled {
-                                format!(
-                                    "Elinde şu an hazır: {}+ per {} · {} çift {}",
-                                    s.total(r.meld_req),
-                                    share(r.p_melds),
-                                    r.pair_req,
-                                    share(r.p_pairs)
-                                )
-                            } else {
-                                format!("Elinde şu an hazır: {}+ per {}", s.total(r.meld_req), share(r.p_melds))
-                            };
-                            format!("{ready}. Açar: sıra sana gelmeden {} · el bitene kadar {}", share(r.p_open_soon), share(r.p_open_end))
+                            format!(
+                                "Açma ihtimali: sana sıra gelmeden {}, el bitene kadar {}",
+                                share(r.p_open_soon),
+                                share(r.p_open_end)
+                            )
+                        };
+                        let ready = if s.rules.pairs_enabled {
+                            format!("Şu an açmaya hazır: perle {}, çiftle {}", share(r.p_melds), share(r.p_pairs))
+                        } else {
+                            format!("Şu an açmaya hazır: {}", share(r.p_melds))
                         };
                         let finish = finish_odds(&r);
                         view! {
                             <div class="muted">
-                                {format!("En iyi per: büyük ihtimalle {} (%80 aralık {}–{})", s.total(r.per[1]), s.total(r.per[0]), s.total(r.per[2]))}
+                                {format!("En büyük açılışı: yaklaşık {} (çoğunlukla {}–{})", s.total(r.per[1]), s.total(r.per[0]), s.total(r.per[2]))}
                             </div>
                             <div class="rbars">{bands}</div>
                             {pairs}
+                            <div>{ready}</div>
                             <div>{odds}</div>
                             <div>{finish}</div>
                         }
@@ -2211,8 +2221,8 @@ fn Reads() -> impl IntoView {
                     }
                     _ => view! {
                         <div>{finish_odds(&r)}</div>
-                        <div>{format!("El şimdi bitse elindeki taşlar: büyük ihtimalle {} puan (%80 aralık {}–{}), okey sayılmadan", r.points[1], r.points[0], r.points[2])}</div>
-                        <div>{format!("Elinde okey olma ihtimali {} (olursa +{} yazılır)", share(r.p_okey), s.rules.joker_in_hand)}</div>
+                        <div>{format!("Elinde kalan: yaklaşık {} puan (çoğunlukla {}–{}, okey hariç)", r.points[1], r.points[0], r.points[2])}</div>
+                        <div>{format!("Okeyi olma ihtimali: {} (olursa ayrıca +{})", share(r.p_okey), s.rules.joker_in_hand)}</div>
                     }
                     .into_any(),
                 };
