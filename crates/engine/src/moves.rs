@@ -4,7 +4,7 @@ use crate::game::{Game, Opened, Outcome, Step};
 use crate::meld::{Shape, Solver, pos_tile};
 use crate::pairs::{guarded, pair_plan};
 use crate::rules::Rules;
-use crate::table::{JokerSlot, Side, TableMeld};
+use crate::table::{JokerSlot, Side, TableMeld, run_top};
 use crate::tile::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -233,7 +233,8 @@ impl Game {
     }
 }
 
-/// Every meld whose lowest natural tile is `i`, built from `counts` (okeys may stand anywhere).
+/// Every meld whose lowest-standing natural tile is `i`, built from `counts` (okeys may stand anywhere).
+/// An ace stands lowest as a 1; after the king it belongs to the run of the tile below it.
 fn melds_with(counts: &Counts, i: Tile, rules: &Rules) -> Vec<Shape> {
     let (c, n) = (color(i), num(i));
     let jokers = counts[JOKER as usize];
@@ -260,37 +261,64 @@ fn melds_with(counts: &Counts, i: Tile, rules: &Rules) -> Vec<Shape> {
         }
     }
 
-    fn extend(counts: &Counts, c: u8, lo: u8, next: u8, left: u8, mask: u16, min_len: u8, max_len: u8, out: &mut Vec<Shape>) {
-        let len = next - lo;
-        if len >= min_len {
+    struct Span {
+        c: u8,
+        lo: u8,
+        top: u8,
+        min_len: u8,
+        max_len: u8,
+    }
+    fn extend(counts: &Counts, s: &Span, next: u8, left: u8, mask: u16, out: &mut Vec<Shape>) {
+        let len = next - s.lo;
+        if len >= s.min_len {
             out.push(Shape::Run {
-                color: c,
-                lo,
+                color: s.c,
+                lo: s.lo,
                 hi: next - 1,
                 jokers: mask,
             });
         }
-        if len >= max_len || next > 13 {
+        if len >= s.max_len || next > s.top {
             return;
         }
-        if counts[id(c, next) as usize] > 0 {
-            extend(counts, c, lo, next + 1, left, mask, min_len, max_len, out);
+        if counts[pos_tile(s.c, next) as usize] > 0 {
+            extend(counts, s, next + 1, left, mask, out);
         }
         if left > 0 {
-            extend(counts, c, lo, next + 1, left - 1, mask | 1 << next, min_len, max_len, out);
+            extend(counts, s, next + 1, left - 1, mask | 1 << next, out);
         }
     }
     let max_len = rules.max_run_len.max(min_len);
-    for prefix in 0..=jokers.min(n - 1) {
-        let lo = n - prefix;
-        let mask = (lo..n).fold(0u16, |m, p| m | 1 << p);
-        extend(counts, c, lo, n + 1, jokers - prefix, mask, min_len, max_len, &mut out);
+    let runs_from = |at: u8, out: &mut Vec<Shape>| {
+        for prefix in 0..=jokers.min(at - 1) {
+            let lo = at - prefix;
+            let span = Span {
+                c,
+                lo,
+                top: run_top(rules, lo),
+                min_len,
+                max_len,
+            };
+            let mask = (lo..at).fold(0u16, |m, p| m | 1 << p);
+            extend(counts, &span, at + 1, jokers - prefix, mask, out);
+        }
+    };
+    runs_from(n, &mut out);
+    if n == 1 && rules.ace_after_king {
+        runs_from(14, &mut out);
     }
     out
 }
 
-fn potential(counts: &Counts, from: usize) -> i32 {
-    (from..NNAT).map(|k| counts[k] as i32 * num(k as Tile) as i32).sum::<i32>() + counts[JOKER as usize] as i32 * 13
+/// More than the melds still to come can add to an opening total.
+fn potential(counts: &Counts, from: usize, rules: &Rules) -> i32 {
+    let rest: i32 = (from..NNAT).map(|k| counts[k] as i32 * num(k as Tile) as i32).sum();
+    let (mut okey, mut aces) = (13, 0);
+    if rules.ace_after_king {
+        okey = okey.max(rules.ace_high_value);
+        aces = (0..NCOLORS).map(|c| counts[id(c, 1) as usize] as i32).sum::<i32>() * rules.ace_high_value.max(0);
+    }
+    rest + aces + counts[JOKER as usize] as i32 * okey
 }
 
 /// Every set of disjoint melds worth at least `min_value`, each set exactly once.
@@ -315,7 +343,7 @@ fn meld_sets(counts: &mut Counts, rules: &Rules, min_value: i32, cap: usize, out
             }
             return;
         };
-        if value + potential(counts, i) < min_value {
+        if value + potential(counts, i, rules) < min_value {
             return;
         }
         rec(counts, rules, i + 1, None, cur, value, min_value, cap, out);

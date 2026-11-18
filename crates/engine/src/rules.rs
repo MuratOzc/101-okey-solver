@@ -1,12 +1,6 @@
 use crate::tile::{JOKER, Tile, num};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TakenJokerPenalty {
-    None,
-    PlacedValue,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Rules {
@@ -35,7 +29,6 @@ pub struct Rules {
     pub take_must_use: bool,
     pub take_penalty_enabled: bool,
     pub take_penalty_mult: i32,
-    pub take_joker_penalty: TakenJokerPenalty,
 
     pub new_melds_after_open: bool,
     pub pair_opener_can_layoff: bool,
@@ -67,15 +60,10 @@ pub struct Rules {
 impl Rules {
     /// What taking `t` from the side costs the taker.
     pub fn take_cost(&self, t: Tile) -> i32 {
-        if !self.take_penalty_enabled {
+        if !self.take_penalty_enabled || t == JOKER {
             return 0;
         }
-        let value = match (t, self.take_joker_penalty) {
-            (JOKER, TakenJokerPenalty::None) => 0,
-            (JOKER, TakenJokerPenalty::PlacedValue) => 7,
-            _ => num(t) as i32,
-        };
-        value * self.take_penalty_mult
+        num(t) as i32 * self.take_penalty_mult
     }
 }
 
@@ -103,7 +91,6 @@ impl Default for Rules {
             take_must_use: true,
             take_penalty_enabled: false,
             take_penalty_mult: 10,
-            take_joker_penalty: TakenJokerPenalty::None,
             new_melds_after_open: true,
             pair_opener_can_layoff: true,
             pair_opener_can_meld: false,

@@ -1353,10 +1353,7 @@ fn conclude(view: &View, mut g: Game, out: Option<Outcome>, sv: &mut Solver, dep
     let gap = loss.map_or(tie, |l| (l * MATCH_SCALE).round() as i32);
     let win = loss.map_or(0.0, |l| 1.0 - l as f32);
     let (finish, opp_finish) = match o {
-        Outcome::Finished(f) => {
-            let mine = f.player == 0 || (team && f.player == 2);
-            (mine, !mine)
-        }
+        Outcome::Finished(f) => (f.player == 0, !(f.player == 0 || (team && f.player == 2))),
         Outcome::DeckOut => (false, false),
     };
     RolloutResult {
@@ -1513,6 +1510,12 @@ pub fn public_view(g: &Game, phase: Phase, taken: Option<Tile>) -> View {
     let mut players = vec![PlayerView::default(); 4];
     for p in 0..4 {
         players[p].opened = g.players[p].opened;
+        // A game keeps only the thresholds: every opener gets the value that gives them back.
+        players[p].open_value = match g.players[p].opened {
+            Opened::Melds => g.meld_req - g.rules.raise_meld_by,
+            Opened::Pairs => g.pair_req as i32 - g.rules.raise_pair_by as i32,
+            Opened::No => 0,
+        };
         players[p].hand_len = Some(g.hand_len(p as u8) as u8);
         let mut pile = g.piles[p];
         let last = g.last[p].filter(|&t| pile[t as usize] > 0);

@@ -100,7 +100,7 @@ pub struct LayOption {
     pub stands_for: Tile,
 }
 
-fn run_top(rules: &Rules, lo: u8) -> u8 {
+pub(crate) fn run_top(rules: &Rules, lo: u8) -> u8 {
     if rules.ace_after_king && lo > 1 { 14 } else { 13 }
 }
 
@@ -453,8 +453,7 @@ fn in_tap_order(tiles: &[Tile], c: u8, rules: &Rules) -> Option<Shape> {
             };
             let hi = lo + len - 1;
             let fits = nat.iter().all(|&(i, p)| p == if step == 1 { lo + i } else { hi - i });
-            let top = if rules.ace_after_king && lo > 1 { 14 } else { 13 };
-            if fits && lo >= 1 && hi <= top {
+            if fits && lo >= 1 && hi <= run_top(rules, lo as u8) as i32 {
                 let mut jokers = 0u16;
                 for (i, &t) in tiles.iter().enumerate() {
                     if t == JOKER {

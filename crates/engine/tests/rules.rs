@@ -414,6 +414,18 @@ fn optional_side_take_penalty_is_ten_times_the_tile() {
     assert_eq!(g.players[0].penalty, 0, "off by default");
 }
 
+#[test]
+fn taking_an_okey_from_the_side_costs_nothing() {
+    let rules = Rules {
+        take_penalty_enabled: true,
+        ..Rules::default()
+    };
+    let mut g = game_with(rules, ["K1", "", "", ""]);
+    set_top(&mut g, "OK");
+    g.take_top(0);
+    assert_eq!(g.players[0].penalty, 0, "throwing it already cost the thrower");
+}
+
 // ---------- after opening ----------
 
 #[test]
@@ -838,6 +850,70 @@ fn exhaustive_analyzer_reports_explicit_moves() {
     assert!(matches!(top.decision, Decision::Play(_)));
     let steps = describe_move(&view, &mv);
     assert!(matches!(steps.last(), Some(Step::Discard { .. })));
+}
+
+#[test]
+fn generator_builds_runs_that_end_on_the_ace_after_the_king() {
+    let rules = Rules {
+        ace_after_king: true,
+        ..Rules::default()
+    };
+    let high = |jokers: u16| Shape::Run {
+        color: 1,
+        lo: 12,
+        hi: 14,
+        jokers,
+    };
+    let lays = |hand: &str, rules: &Rules, shape: Shape| {
+        let mut g = game_with(rules.clone(), [hand, "", "", ""]);
+        put(&mut g, 0, "K9 K10 K11");
+        let positions = generate(&g, 0, None, 5000).positions;
+        positions.iter().any(|acts| acts.contains(&Act::Meld(shape)))
+    };
+    assert!(lays("S12 S13 S1 K5", &rules, high(0)));
+    assert!(lays("OK S13 S1 K5", &rules, high(1 << 12)));
+    assert!(lays("S12 OK S1 K5", &rules, high(1 << 13)));
+    assert!(lays("S12 S13 OK K5", &rules, high(1 << 14)), "the okey may stand for the ace");
+    assert!(lays("OK OK S1 K5", &rules, high(1 << 12 | 1 << 13)));
+    assert!(!lays("S12 S13 S1 K5", &Rules::default(), high(0)), "not at a table where 1 is only low");
+}
+
+#[test]
+fn a_seat_reading_the_table_sees_the_raised_thresholds() {
+    let rules = Rules {
+        katlamali: true,
+        ..Rules::default()
+    };
+    let mut g = game_with(rules, [&format!("{OPEN_101} M5 M6 M7 Si8 Si2"), "K1 K1 M2 M2 S3 S3 Si4 Si4 K6 K6 M9 M9 Si1", "", ""]);
+    assert!(g.try_open_melds(&mut sv(&g), 0, None));
+    assert!(g.try_open_pairs(1, None));
+    assert!(g.meld_req > 101 && g.pair_req > 5);
+    for seat in 0..4 {
+        let view = public_view(&g.rotated(seat), Phase::BeforeDraw, None);
+        assert_eq!(view.requirements(), (g.meld_req, g.pair_req), "seat {seat}");
+    }
+}
+
+#[test]
+fn my_finishing_chance_does_not_count_my_partner() {
+    let rules = Rules {
+        partners: true,
+        ..Rules::default()
+    };
+    let mut g = game_with(rules, ["K1 M4 S9 Si12 K6 M11", "", "", ""]);
+    put(&mut g, 2, "K3 K4 K5");
+    let mut view = public_view(&g, Phase::AfterDraw, None);
+    view.deck_count = 30;
+    view.players[1].hand_len = Some(21);
+    view.players[3].hand_len = Some(21);
+    view.players[2].hand_len = Some(1);
+    view.players[2].known = vec![t("K2")];
+    let mut a = Analyzer::new(view, 5).unwrap();
+    a.step(60);
+    let report = a.report();
+    let top = &report.candidates[0];
+    assert!(top.whole >= 30);
+    assert!(top.p_finish < 0.2, "my partner goes out next turn, not me: {}", top.p_finish);
 }
 
 // ---------- playing for the match, not the hand ----------

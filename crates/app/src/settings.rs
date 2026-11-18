@@ -1,6 +1,6 @@
 use crate::Ctx;
 use leptos::prelude::*;
-use okey_engine::rules::{Rules, TakenJokerPenalty};
+use okey_engine::rules::Rules;
 
 type GetB = fn(&Rules) -> bool;
 type SetB = fn(&mut Rules, bool);
@@ -184,16 +184,6 @@ pub fn Advanced() -> impl IntoView {
                     </label>
                 }).collect_view()}
             }).collect_view()}
-            <label class="opt">
-                <input type="checkbox"
-                    prop:checked=move || st.with(|s| s.rules.take_joker_penalty == TakenJokerPenalty::PlacedValue)
-                    on:change=move |ev| {
-                        let v = event_target_checked(&ev);
-                        set_rules(Box::new(move |r| r.take_joker_penalty = if v { TakenJokerPenalty::PlacedValue } else { TakenJokerPenalty::None }))
-                    }
-                />
-                "Yandan alınan okeye de ceza"
-            </label>
             {nums().into_iter().map(|(title, items)| view! {
                 <h4>{title}</h4>
                 {items.into_iter().map(|(label, get, set)| view! {
