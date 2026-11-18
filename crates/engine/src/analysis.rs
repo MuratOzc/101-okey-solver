@@ -967,9 +967,15 @@ impl Analyzer {
         let mut ranked: Vec<(f64, Cand)> = self
             .cands
             .drain(..)
-            .map(|c| {
+            .enumerate()
+            .map(|(i, c)| {
                 let (d, se) = paired(&c.scores, &leader);
-                (if se.is_finite() { d - SCREEN_DOUBT * se } else { f64::NEG_INFINITY }, c)
+                let could_be = if i > 0 && se.is_finite() {
+                    d - SCREEN_DOUBT * se
+                } else {
+                    f64::NEG_INFINITY
+                };
+                (could_be, c)
             })
             .collect();
         ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -1307,7 +1313,7 @@ fn conclude(view: &View, mut g: Game, out: Option<Outcome>, sv: &mut Solver, dep
         Some(o) => o,
         None => {
             g.current = 1;
-            next_takes = g.bot_wants_take(sv, 1);
+            next_takes = !g.deck.is_empty() && g.bot_wants_take(sv, 1);
             if let Some(ai) = ai {
                 match play_out_to(&mut g, sv, ai.net, MINE, 0, ai.horizon) {
                     Ok(o) => o,

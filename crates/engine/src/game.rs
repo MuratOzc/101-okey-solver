@@ -1,7 +1,7 @@
 use crate::meld::*;
 use crate::pairs::{pair_plan, pair_stats};
 use crate::policy::{LayStyle, OpenStyle, Policy};
-use crate::rules::{Rules, TakenJokerPenalty};
+use crate::rules::Rules;
 use crate::stakes::Stakes;
 use crate::table::{JokerSlot, Side, Table, TableMeld};
 use crate::tile::*;
@@ -281,24 +281,17 @@ impl Game {
         self.players[p as usize].penalty -= r.big_pairs_penalty;
     }
 
-    fn charge_take(&mut self, p: u8, t: Tile) {
-        let r = &self.rules;
-        if !r.take_penalty_enabled {
-            return;
-        }
-        let v = if t == JOKER {
-            match r.take_joker_penalty {
-                TakenJokerPenalty::None => 0,
-                TakenJokerPenalty::PlacedValue => 7,
-            }
-        } else {
-            num(t) as i32
-        };
-        self.players[p as usize].penalty += v * r.take_penalty_mult;
+    /// An opening arrangement in the given style, already checked against the threshold.
+    /// A side-taken tile has to be used, so with one any arrangement that opens will do.
+    fn open_plan(&self, sv: &mut Solver, p: u8, must: Option<Tile>, style: OpenStyle) -> Option<Plan> {
+        self.styled_plan(sv, p, must, style).or_else(|| {
+            (must.is_some() && style != OpenStyle::MaxValue)
+                .then(|| self.styled_plan(sv, p, must, OpenStyle::MaxValue))
+                .flatten()
+        })
     }
 
-    /// An opening arrangement in the given style, already checked against the threshold.
-    fn open_plan(&self, sv: &mut Solver, p: u8, must: Option<Tile>, style: OpenStyle) -> Option<Plan> {
+    fn styled_plan(&self, sv: &mut Solver, p: u8, must: Option<Tile>, style: OpenStyle) -> Option<Plan> {
         let hand = self.players[p as usize].hand;
         if open_bound(&hand, &self.rules) < self.meld_req || sv.value_at_most(&hand) < self.meld_req {
             return None;
@@ -869,7 +862,18 @@ impl Game {
                 }
                 self.pairs_ok_with(p, &hand, Some(t)).is_some() || self.elden_plan_with(sv, p, hand, Some(t)).is_some()
             }
-            _ => self.lay_search(sv, p, &hand, Some(t)).is_some(),
+            _ => {
+                let all = total(&hand) as usize;
+                let finish_on_okey = hand[JOKER as usize] > 0 && t != JOKER && {
+                    let mut rest = hand;
+                    rest[JOKER as usize] -= 1;
+                    self.lay_search(sv, p, &rest, Some(t)).is_some_and(|plan| plan.rest.is_empty())
+                };
+                finish_on_okey
+                    || self
+                        .lay_search(sv, p, &hand, Some(t))
+                        .is_some_and(|mut plan| self.hold_back(&mut plan, Some(t), all))
+            }
         }
     }
 
@@ -907,7 +911,7 @@ impl Game {
         self.piles[from][t as usize] = self.piles[from][t as usize].saturating_sub(1);
         self.last[from] = None;
         self.players[p as usize].hand[t as usize] += 1;
-        self.charge_take(p, t);
+        self.players[p as usize].penalty += self.rules.take_cost(t);
         t
     }
 
@@ -1357,6 +1361,10 @@ impl Game {
             m.owner = (m.owner + 4 - k) % 4;
         }
         g.current = (g.current + 4 - k) % 4;
+        g.last_draw = g.last_draw.map(|p| (p + 4 - k) % 4);
+        for l in g.table.melds.iter_mut().flat_map(|m| m.lent.iter_mut()).flatten() {
+            l.0 = (l.0 + 4 - k) % 4;
+        }
         if k != 0 {
             g.stakes = None;
         }

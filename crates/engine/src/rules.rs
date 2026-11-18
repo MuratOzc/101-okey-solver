@@ -1,3 +1,4 @@
+use crate::tile::{JOKER, Tile, num};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +62,21 @@ pub struct Rules {
 
     pub big_pairs_penalty: i32,
     pub big_pairs_min: u8,
+}
+
+impl Rules {
+    /// What taking `t` from the side costs the taker.
+    pub fn take_cost(&self, t: Tile) -> i32 {
+        if !self.take_penalty_enabled {
+            return 0;
+        }
+        let value = match (t, self.take_joker_penalty) {
+            (JOKER, TakenJokerPenalty::None) => 0,
+            (JOKER, TakenJokerPenalty::PlacedValue) => 7,
+            _ => num(t) as i32,
+        };
+        value * self.take_penalty_mult
+    }
 }
 
 impl Default for Rules {

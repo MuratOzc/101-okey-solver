@@ -395,8 +395,8 @@ pub fn classify(tiles: &[Tile], rules: &Rules) -> Option<Shape> {
                 tile: nat[0],
                 joker: false,
             }),
-            (1, 1) => Some(Shape::Pair { tile: nat[0], joker: true }),
-            (0, 2) => Some(Shape::Pair { tile: JOKER, joker: true }),
+            (1, 1) if rules.joker_pairs_with_single => Some(Shape::Pair { tile: nat[0], joker: true }),
+            (0, 2) if rules.two_jokers_pair => Some(Shape::Pair { tile: JOKER, joker: true }),
             _ => None,
         };
     }

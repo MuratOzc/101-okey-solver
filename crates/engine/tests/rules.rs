@@ -612,6 +612,8 @@ fn group_okey_needs_the_group_completed() {
 fn one_is_only_low_and_groups_need_distinct_colors() {
     let r = Rules::default();
     assert!(classify(&[t("K12"), t("K13"), t("K1")], &r).is_none(), "12-13-1 is not a run");
+    assert!(classify(&[JOKER, JOKER], &r).is_none(), "two okeys are not a pair");
+    assert!(classify(&[t("K5"), JOKER], &r).is_some_and(|s| s.is_pair()));
     assert!(classify(&[t("K1"), t("K2"), t("K3")], &r).is_some());
     assert!(
         classify(&[t("K5"), t("K5"), t("M5")], &r).is_none(),
@@ -1164,4 +1166,45 @@ fn generator_offers_the_okey_beside_a_tile_whose_twin_is_out() {
     g.seen[t("K9") as usize] += 1;
     assert!(with(&g, "K9"), "the other K9 is out, so an okey beside mine cannot be taken");
     assert!(with(&g, "M12"), "shedding the higher tile stays on offer");
+}
+
+#[test]
+fn a_bot_that_takes_the_side_tile_always_uses_it() {
+    let rules = Rules::default();
+    let mut sv = Solver::new(&rules);
+    let (mut takes, mut unused) = (0, Vec::new());
+    for policy in [Policy::BASIC, Policy::TUNED, Policy::FINISHER, Policy::HOLDER, Policy::PATIENT] {
+        for seed in 0..300u64 {
+            let mut g = Game::deal(&rules, &mut Rng::new(seed), (seed % 4) as u8);
+            g.policy = [policy; 4];
+            let mut over = g.starter_turn(&mut sv).is_some();
+            while !over && !g.deck.is_empty() {
+                let p = g.current;
+                g.table.new_turn();
+                let taken = g.bot_wants_take(&mut sv, p).then(|| {
+                    let before = g.players[p as usize].hand;
+                    (g.take_top(p), before)
+                });
+                if taken.is_none() && g.draw(p).is_none() {
+                    break;
+                }
+                over = g.bot_act(&mut sv, p, taken.map(|x| x.0)).is_some();
+                if let Some((tile, before)) = taken {
+                    takes += 1;
+                    let thrown = u8::from(g.last[p as usize] == Some(tile));
+                    if !over && g.players[p as usize].hand[tile as usize] + thrown > before[tile as usize] {
+                        unused.push((seed, p, short(tile)));
+                    }
+                }
+                g.current = (p + 1) % 4;
+            }
+        }
+    }
+    assert!(takes > 1000, "{takes}");
+    assert!(
+        unused.is_empty(),
+        "{} of {takes} takes left the tile unused: {:?}",
+        unused.len(),
+        &unused[..unused.len().min(8)]
+    );
 }

@@ -544,7 +544,7 @@ fn bot_play_is_unchanged() {
     assert_eq!(sums, GOLDEN, "bot behaviour changed");
 }
 
-const GOLDEN: [u64; 2] = [8850612239179389771, 9617653818221818233];
+const GOLDEN: [u64; 2] = [17992581461281428827, 11075590812157687950];
 
 /// The cheap pre-checks may only ever say "impossible" when the full search agrees.
 #[test]
