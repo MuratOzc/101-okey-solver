@@ -1232,7 +1232,7 @@ fn opp_act(ctx: Ctx, s: &State) -> impl IntoView + use<> {
     });
     let can_tap = s.can_lay_off() && (0..s.table.melds.len()).any(|i| s.meld_tappable(i));
     let elden = pv.opened == Opened::No && !s.opened_this_turn;
-    let short = (!s.opening_complete()).then(|| {
+    let short = (!s.may_discard()).then(|| {
         view! {
             <div class="warn">{s.opening_progress()} " · açılış eksik. Kalan perleri gir; yanlışsa geri al."</div>
         }
@@ -1373,9 +1373,9 @@ fn manual(ctx: Ctx, s: &State) -> impl IntoView + use<> {
         _ => String::new(),
     };
     let complete = s.opening_complete();
-    let single = (n == 1 && complete).then(|| s.buffer[0]);
+    let single = (n == 1 && s.may_discard()).then(|| s.buffer[0]);
     let buffer = s.buffer.clone();
-    let short = (!complete).then(|| view! {
+    let short = (!s.may_discard()).then(|| view! {
         <div class="warn">{s.opening_progress()} " · açılış tamamlanmadan işleyemez, okey alamaz, taş atamazsın. Eksik perleri indir ya da geri al."</div>
     });
     view! {

@@ -51,6 +51,7 @@ pub struct State {
     pub drawn: bool,
     pub taken: Option<Tile>,
     pub opened_this_turn: bool,
+    pub touched_table: bool,
     pub first_turn: bool,
     pub buffer: Vec<Tile>,
     pub mode: Mode,
@@ -87,6 +88,7 @@ impl Default for State {
             drawn: false,
             taken: None,
             opened_this_turn: false,
+            touched_table: false,
             first_turn: true,
             buffer: vec![],
             mode: Mode::Gosterge,
@@ -441,7 +443,7 @@ impl State {
                 name(x)
             ));
         }
-        let finishing = p == 0 && self.hand.len() == 1;
+        let finishing = self.last_tile();
         let pen = if finishing {
             0
         } else if t == JOKER {
@@ -451,7 +453,7 @@ impl State {
         } else {
             0
         };
-        if !self.opening_complete() && !finishing {
+        if !self.may_discard() {
             let progress = self.opening_progress().unwrap_or_default();
             return Err(format!(
                 "{progress}. Açılış tamamlanmadan taş atılamaz: eksik peri gir ya da Geri al."
@@ -501,6 +503,7 @@ impl State {
         self.drawn = false;
         self.taken = None;
         self.opened_this_turn = false;
+        self.touched_table = false;
         self.first_turn = false;
         self.buffer.clear();
         self.table.new_turn();
@@ -566,7 +569,19 @@ impl State {
         }
     }
 
-    /// "87 / 101" style progress for an opening in progress.
+    fn last_tile(&self) -> bool {
+        if self.turn == 0 {
+            self.hand.len() == 1
+        } else {
+            self.cur().hand_len == Some(1)
+        }
+    }
+
+    /// A half-laid opening may end the turn only by going out with it (elden).
+    pub fn may_discard(&self) -> bool {
+        self.opening_complete() || (self.last_tile() && !self.rules.elden_requires_open_min)
+    }
+
     pub fn total(&self, v: i32) -> String {
         count(v, self.yan)
     }
@@ -575,6 +590,7 @@ impl State {
         if self.yan { self.total(v) } else { format!("{v} puan") }
     }
 
+    /// "87 / 101" style progress for an opening in progress.
     pub fn opening_progress(&self) -> Option<String> {
         if !self.opened_this_turn {
             return None;
@@ -692,6 +708,7 @@ impl State {
         if o.tile == JOKER {
             self.table.melds[idx].okey_from(self.turn, at);
         }
+        self.touched_table = true;
         self.spend(&[o.tile])
     }
 
@@ -730,6 +747,7 @@ impl State {
             self.penalties[loser as usize] += self.rules.okey_lost_penalty;
         }
         self.table.swap_joker(slot, self.turn);
+        self.touched_table = true;
         for _ in 0..slot.jokers {
             if self.turn == 0 {
                 self.hand.push(JOKER);
@@ -762,6 +780,7 @@ impl State {
         let tiles = if okey { vec![t, JOKER] } else { vec![t, t] };
         self.spend(&tiles)?;
         self.table.pairs_added[owner as usize] += 1;
+        self.touched_table |= owner != self.turn;
         let mut meld = TableMeld::new(owner, Shape::Pair { tile: t, joker: okey });
         if okey {
             meld.okey_from(self.turn, Side::Group);
@@ -789,6 +808,7 @@ impl State {
         self.result = Some(format!("{} bitirdi", SEAT_NAMES[p as usize]));
         self.finisher = Some(p);
         self.fin_okey = last == Some(JOKER);
+        self.fin_elden = p == self.turn && self.opened_this_turn && (!self.touched_table || self.rules.open_finish_is_elden);
         self.stage = Stage::Over;
         self.mode = Mode::Idle;
     }
@@ -842,6 +862,8 @@ impl State {
             .map(|m| if m.shape.is_pair() { 1 } else { m.shape.open_value(&self.rules) })
             .sum();
         let opens = self.players[0].opened == Opened::No && g.players[0].opened != Opened::No;
+        self.touched_table |= g.table.melds[before..].iter().any(|m| m.owner != 0)
+            || g.table.melds.iter().zip(&self.table.melds).any(|(now, was)| now.shape != was.shape);
         self.table = g.table.clone();
         self.hand = tiles_of(&g.players[0].hand);
         self.players[0].opened = g.players[0].opened;
@@ -859,6 +881,18 @@ impl State {
         self.mode = Mode::Idle;
     }
 
+    fn hand_ended(&mut self, res: Option<Outcome>) -> bool {
+        match res {
+            Some(Outcome::Finished(f)) => {
+                self.hand.push(f.last);
+                self.finish(0, Some(f.last));
+            }
+            Some(Outcome::DeckOut) => self.deck_out(),
+            None => return false,
+        }
+        true
+    }
+
     /// Carry out an explicit move (steps, then discard) for me on the real state.
     pub fn apply_move(&mut self, mv: &Move) -> R {
         let view = self.view().ok_or("Sıra sende değil")?;
@@ -868,18 +902,9 @@ impl State {
             .play_move(0, mv, self.taken)
             .map_err(|_| "Bu hamle artık geçerli değil".to_string())?;
         self.take_over(&g, before);
-        match res {
-            Some(Outcome::Finished(f)) => {
-                self.hand.push(f.last);
-                self.finish(0, Some(f.last));
-                self.fin_okey = f.okey;
-                self.fin_elden = f.elden;
-            }
-            Some(Outcome::DeckOut) => self.deck_out(),
-            None => {
-                self.players[0].discards.push(mv.discard);
-                self.next_turn();
-            }
+        if !self.hand_ended(res) {
+            self.players[0].discards.push(mv.discard);
+            self.next_turn();
         }
         Ok(())
     }
@@ -903,23 +928,11 @@ impl State {
                     .apply_choice(&mut sv, 0, choice, self.taken)
                     .map_err(|_| "Bu hamle artık geçerli değil".to_string())?;
                 self.take_over(&g, before);
-                match res {
-                    Some(Outcome::Finished(f)) => {
-                        self.hand.push(f.last);
-                        self.finish(0, Some(f.last));
-                        self.fin_okey = f.okey;
-                        self.fin_elden = f.elden;
-                        Ok(())
-                    }
-                    Some(Outcome::DeckOut) => {
-                        self.deck_out();
-                        Ok(())
-                    }
-                    None => {
-                        let t = discard.ok_or("Atılacak taş seçilmedi")?;
-                        self.discard(0, t)
-                    }
+                if self.hand_ended(res) {
+                    return Ok(());
                 }
+                let t = discard.ok_or("Atılacak taş seçilmedi")?;
+                self.discard(0, t)
             }
         }
     }
@@ -1250,6 +1263,7 @@ mod tests {
         enter_meld(&mut s, "K9 K10 K11");
         enter_meld(&mut s, "S9 S10 S11 S12 S13");
         s.finish(1, Some(JOKER));
+        s.fin_elden = false;
         s.players[3].opened = Opened::Melds;
         assert_eq!(s.hand_scores(), None, "nothing is scored before the leftovers are entered");
         s.left[3] = Some(40);
@@ -1294,6 +1308,48 @@ mod tests {
         s.players[1].hand_len = Some(1);
         s.key(t("K7")).unwrap();
         assert_eq!((s.stage, s.finisher), (Stage::Over, Some(1)));
+    }
+
+    #[test]
+    fn going_out_in_the_turn_of_the_opening_is_elden_without_ticking_it() {
+        let mut s = started();
+        s.discard(0, t("Si13")).unwrap();
+        s.opp_draw().unwrap();
+        enter_meld(&mut s, "M6 M7 M8");
+        s.players[1].hand_len = Some(1);
+        s.key(t("K7")).unwrap();
+        assert_eq!((s.stage, s.finisher, s.fin_elden), (Stage::Over, Some(1), true), "21 points and out: elden needs no 101");
+
+        let mut s = started();
+        s.hand = "K1 K2 K3 M9 M10 M11 S4".split_whitespace().map(t).collect();
+        s.mode = Mode::Manual;
+        for meld in ["K1 K2 K3", "M9 M10 M11"] {
+            s.buffer = meld.split_whitespace().map(t).collect();
+            s.lay_meld().unwrap();
+        }
+        assert!(!s.opening_complete() && s.may_discard(), "36 points, but the last tile may go");
+        s.discard(0, t("S4")).unwrap();
+        assert_eq!((s.stage, s.finisher, s.fin_elden), (Stage::Over, Some(0), true));
+
+        let mut s = started();
+        s.discard(0, t("Si13")).unwrap();
+        s.opp_draw().unwrap();
+        enter_meld(&mut s, "M6 M7 M8");
+        enter_meld(&mut s, "K9 K10 K11");
+        enter_meld(&mut s, "S9 S10 S11 S12 S13");
+        let low = *s.lay_options(0).iter().find(|o| o.tile == t("M5")).unwrap();
+        s.lay_option(0, low).unwrap();
+        s.players[1].hand_len = Some(1);
+        s.key(t("K7")).unwrap();
+        assert_eq!((s.stage, s.fin_elden), (Stage::Over, false), "opening and then laying off is a plain finish");
+
+        let mut s = started();
+        s.rules.elden_requires_open_min = true;
+        s.hand = "K1 K2 K3 S4".split_whitespace().map(t).collect();
+        s.mode = Mode::Manual;
+        s.buffer = vec![t("K1"), t("K2"), t("K3")];
+        s.lay_meld().unwrap();
+        assert!(s.discard(0, t("S4")).is_err(), "this table wants 101 even for elden");
     }
 
     #[test]

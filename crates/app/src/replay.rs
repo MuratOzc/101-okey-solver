@@ -38,7 +38,7 @@ pub struct HandLog {
 pub struct Saved {
     pub saved_at: String,
     pub hand_no: u8,
-    /// False when a new hand or match was started before this one was scored.
+    /// False when a new match was started before this hand ended.
     pub complete: bool,
     pub scores: Option<[i32; 4]>,
     pub start: Value,
@@ -129,7 +129,7 @@ pub fn on_act(before: &State, after: &State, shown: Option<Shown>) -> Result<(),
                 all.push(Saved {
                     saved_at: js_sys::Date::new_0().to_iso_string().into(),
                     hand_no: before.hand_no,
-                    complete: scores.is_some(),
+                    complete: before.stage == Stage::Over,
                     scores,
                     start: l.start.clone(),
                     events: l.events.clone(),
